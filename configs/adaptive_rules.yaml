@@ -1,0 +1,12 @@
+segmentation:
+  macro_threshold: 122880 # 120k
+  meso_size: 16384
+  micro_size: 2048
+  overlap_size: 128
+logic_gating:
+  fast_pass_threshold: 0.4
+  deep_reasoning_threshold: 0.8
+  max_diffusion_steps: 100
+  min_diffusion_steps: 10
+monitoring:
+  glitch_frame_rate_ms: 500
