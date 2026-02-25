@@ -9,31 +9,38 @@ class BoundaryFuser:
     
     def __init__(self):
         self.overlap_size = THUNDER_CONFIG["engine"]["overlap_size"]
+        self.coherence_scale = THUNDER_CONFIG["logic"]["scaling"]["coherence_scale"]
+        self.anchor_strength = THUNDER_CONFIG["logic"]["scaling"]["fusion_anchor_strength"]
+
+    def get_fusion_mask(self, device):
+        """
+        Generates a smooth transition mask for anchored denoising.
+        """
+        x = torch.linspace(-5, 5, self.overlap_size).to(device)
+        return torch.sigmoid(x).view(1, -1, 1) # [1, overlap, 1]
+
+    def apply_global_coherence(self, micro_latent, macro_latent_segment):
+        """
+        Nudges the micro-tile latent towards the macro-tile representation.
+        Ensures the local generation doesn't drift away from the global topic.
+        """
+        if macro_latent_segment is None:
+            return micro_latent
+            
+        # Target: Align micro-latent direction with macro-latent
+        # We use a simple nudge (interpolation) towards the macro context
+        nudged_latent = (1 - self.coherence_scale) * micro_latent + self.coherence_scale * macro_latent_segment
+        return nudged_latent
 
     def fuse_tiles(self, tile_a, tile_b):
         """
-        Smoothly blends two adjacent tiles at their boundary using a Sigmoid curve.
-        Ensures that the transition region (overlap) is coherent.
+        Legacy fusion: blends two finished tiles. 
+        Note: The preferred method is now anchored denoising inside the engine.
         """
-        # tile_a: [B, L, D], tile_b: [B, L, D]
-        # We assume they overlap by self.overlap_size
+        weights = self.get_fusion_mask(tile_a.device)
         
-        # Calculate blending weights (Sigmoid curve)
-        x = torch.linspace(-5, 5, self.overlap_size).to(tile_a.device)
-        weights = torch.sigmoid(x).view(1, -1, 1) # [1, overlap, 1]
-        
-        # Portion of tile A that overlaps with B (end of A)
         a_overlap = tile_a[:, -self.overlap_size:, :]
-        # Portion of tile B that overlaps with A (start of B)
         b_overlap = tile_b[:, :self.overlap_size, :]
         
-        # Blended overlapping region
         fused_overlap = (1 - weights) * a_overlap + weights * b_overlap
-        
         return fused_overlap
-
-    def apply_global_coherence(self, macro_tile):
-        """
-        Ensures that local refinements respect the global macro context.
-        """
-        pass

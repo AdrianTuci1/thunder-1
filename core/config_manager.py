@@ -31,7 +31,7 @@ THUNDER_CONFIG = {
         
         # Mode-specific baseline steps
         "modes": {
-            "instant": {"base": 5, "max": 10},
+            "instant": {"base": 5, "max": 14},
             "fast": {"base": 15, "max": 25},
             "thinking": {"base": 30, "max": 50}
         },
@@ -40,6 +40,8 @@ THUNDER_CONFIG = {
         "scaling": {
             "complexity_weight": 0.5,
             "length_weight": 0.3,   # log-scale multiplier for predicted response length
+            "coherence_scale": 0.15, # Force applied to nudge latents towards macro context
+            "fusion_anchor_strength": 0.8, # Strength of the anchor constraint at boundaries
         }
     },
     
