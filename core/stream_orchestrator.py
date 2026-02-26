@@ -72,3 +72,55 @@ class StreamOrchestrator:
     def get_stream(self, index):
         """Returns the specific stream for a given hardware block."""
         return self.streams[index % self.stream_count]
+
+    def crystallize_global_field(self, tiles_data, diffusion_engine, total_steps=50):
+        """
+        Executes the global synchronized reverse diffusion loop across all tiles.
+        tiles_data is a list of dicts: {'id': id, 'latent': tensor, 'macro_context': tensor, 'anchor_data': tensor}
+        """
+        print(f"⚡ Thunder: Starting Global Field Crystallization ({len(tiles_data)} tiles, {total_steps} steps)...")
+        
+        for step_idx in range(total_steps):
+            
+            # 1. Define the single-step computation for a tile
+            def step_func(tile):
+                return diffusion_engine.process_single_step(
+                    x=tile['latent'],
+                    step_idx=step_idx,
+                    total_steps=total_steps,
+                    macro_context=tile.get('macro_context'),
+                    anchor_data=tile.get('anchor_data')
+                )
+            
+            # 2. Execute one step in parallel across all streams
+            results = self.execute_parallel(tiles_data, step_func)
+            
+            # 3. Update latent fields with the new partially denoised state
+            for i, result_latent in enumerate(results):
+                tiles_data[i]['latent'] = result_latent
+                
+            # 4. Perform Global Field Fusion (Overlap Synchronization)
+            # This extracts the boundary of tile i and sets it as the anchor for tile i+1 in the next step
+            if step_idx < total_steps - 1:
+                self._synchronize_overlaps(tiles_data, diffusion_engine.fuser)
+            
+        print("⚡ Thunder: Global Field Crystallization Complete.")
+        return [t['latent'] for t in tiles_data]
+
+    def _synchronize_overlaps(self, tiles_data, fuser):
+        """
+        Extracts boundaries after a step and sets them as anchors for the next step.
+        Ensures perfect continuity across the 16k latent field.
+        """
+        overlap_size = fuser.overlap_size
+        
+        # Propagate boundary i -> anchor for i+1
+        for i in range(len(tiles_data) - 1):
+            left_tile_latent = tiles_data[i]['latent']
+            
+            # The boundary is the last 'overlap_size' elements of left_tile's sequence length
+            # latent shape: [B, L, D]
+            boundary_latent = left_tile_latent[:, -overlap_size:, :].detach().clone()
+            
+            # Set this as the anchor for the right tile (i+1) for the next step
+            tiles_data[i+1]['anchor_data'] = boundary_latent

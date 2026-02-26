@@ -54,27 +54,37 @@ THUNDER_CONFIG = {
     
     # --- TRAINING & LORA ---
     "training": {
-        "lora_rank": 128,        # Rank (r) of LoRA adapters (higher = more complex reasoning)
-        "lora_alpha": 256,       # Scaling factor (alpha) for LoRA updates
-        "learning_rate": 2e-4,   # Initial learning rate for SFT
+        "lora_rank": 64,        # Rank (r) of LoRA adapters (higher = more complex reasoning)
+        "lora_alpha": 128,       # Scaling factor (alpha) for LoRA updates
+        "learning_rate": 2e-4,   # Initial learning rate for SFT sau 5e-5 daca nu scade loss-ul
         "batch_size": 2,         # Per-device training batch size
         "grad_accum": 4,         # Gradient accumulation steps
-        "max_steps": 60,         # Total number of training steps
+        "max_steps": 60,         # Total number of training steps ( use 1200 )
         "warmup_steps": 5,       # Linear warmup steps
         "logging_steps": 1,      # Step interval for logging progress
         "optim": "adamw_8bit",   # Optimizer type (8-bit AdamW for VRAM efficiency)
         "weight_decay": 0.01,    # Weight decay for regularization
-        "lr_scheduler": "linear", # Learning rate decay schedule
+        "lr_scheduler": "cosine", # Learning rate decay schedule
         "seed": 3407,            # Random seed for reproducibility
         "output_dir": "./thunder_finetuned", # Directory for saving model weights
         
         # Data Pipeline
-        "dataset_name": "HuggingFaceH4/ultrafeedback_binarized", # Better for reasoning alignment
+        "dataset_name": [
+            "HuggingFaceH4/ultrafeedback_binarized",
+            "Open-Orca/SlimOrca",
+            "THUDM/LongAlign"
+        ],
+        "dataset_ratios": [0.5, 0.3, 0.2], # 50% alignment, 30% reasoning, 20% long context
         "num_proc": 4,           # Increased for faster mapping
         "packing": True,         # Enables Constant Length Packing for 120k tokens
         
+        # Checkpointing
+        "save_steps": 200,       # Save model every 200 steps
+        "save_total_limit": 3,   # Keep only the last 3 checkpoints to save disk
+        
         # Noise & Loss
         "num_train_timesteps": 1000, # Steps in the noise degradation schedule
+        "noise_schedule_type": "cosine", # "linear", "cosine", or "sigmoid"
         "boundary_weight": 0.1,      # Weight of the boundary coherence loss component
     },
     

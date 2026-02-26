@@ -2,45 +2,51 @@ import torch
 
 class GlobalStateManager:
     """
-    Manages the Mamba "Global State" for massive 120k context windows.
-    Handles caching and retrieval of internal states across tiling boundaries.
+    Manages the "Global Latent Field" for the Thunder diffusion engine.
+    Handles the persistence and synchronization of noisy/denoised latent 
+    vectors across 16k+ token boundaries.
     """
     
-    def __init__(self, dimension, state_size=16):
-        self.dimension = dimension
-        self.state_size = state_size
-        self.global_state_cache = {}
+    def __init__(self, latent_dim):
+        self.latent_dim = latent_dim
+        self.latent_field_cache = {}
 
-    def capture_state(self, tile_id, state_tensor):
+    def capture_latent_state(self, tile_id, latent_tensor):
         """
-        Caches the state for a specific tile.
+        Caches the partially denoised latent state for a specific tile.
         """
-        # Store on GPU if possible, else CPU to save VRAM for 120k context
-        self.global_state_cache[tile_id] = state_tensor.detach().clone()
+        self.latent_field_cache[tile_id] = latent_tensor.detach().clone()
 
-    def get_state(self, tile_id):
+    def get_latent_state(self, tile_id):
         """
-        Retrieves cached state for a specific tile.
+        Retrieves the cached latent state for a specific tile.
         """
-        return self.global_state_cache.get(tile_id)
+        return self.latent_field_cache.get(tile_id)
 
-    def synchronize_states(self, meso_id, micro_tiles):
+    def synchronize_diffusion_field(self, meso_id, micro_tiles):
         """
-        Ensures consistency between Micro-tiles within a Meso-tile boundary.
-        Propagates the Mamba hidden state from block i-1 to block i.
+        Ensures semantic continuity in the latent field across parallel tiles.
+        Propagates the boundary 'anchor' latents from tile i-1 to tile i.
         """
-        print(f"⚡ Thunder: Synchronizing states for Meso-tile {meso_id}...")
+        print(f"⚡ Thunder: Synchronizing Diffusion Field for Meso-tile {meso_id}...")
         
         for i in range(1, len(micro_tiles)):
             prev_id = micro_tiles[i-1]["id"]
             curr_id = micro_tiles[i]["id"]
             
-            prev_state = self.get_state(prev_id)
-            if prev_state is not None:
-                # Merge states - simplifies the transition between parallel streams
-                # Logic involves matching the end state of tile A to the start of tile B
-                pass
+            prev_latent = self.get_latent_state(prev_id)
+            if prev_latent is not None:
+                # The end-boundary of tile (i-1) becomes the starting anchor for tile i
+                # This ensures the 'noise-to-token' transition is smooth.
+                self.latent_field_cache[curr_id + "_anchor"] = prev_latent.detach().clone()
 
-    def clear(self):
-        self.global_state_cache.clear()
-        torch.cuda.empty_cache()
+    def get_latent_anchor(self, tile_id):
+        """
+        Retrieves the latent anchor for the current tile's diffusion process.
+        """
+        return self.latent_field_cache.get(tile_id + "_anchor")
+
+    def clear_field(self):
+        self.latent_field_cache.clear()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

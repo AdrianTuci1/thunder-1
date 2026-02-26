@@ -13,15 +13,22 @@ class ThunderTokenSampler:
         self.top_k = THUNDER_CONFIG["sampling"]["top_k"]
         self.top_p = THUNDER_CONFIG["sampling"]["top_p"]
 
-    def sample(self, logits):
+    def sample(self, latent_vectors, lm_head):
         """
-        Samples tokens from logits using the configured strategy.
-        logits: [B, L, D] or [L, D]
+        Samples tokens from the continuous latent field by projecting back to the vocabulary.
+        latent_vectors: [B, L, D] or [L, D]
+        lm_head: The prediction head (un-embedding layer) of the backbone model, projecting D -> V.
         """
+        # Project Latent Space -> Vocabulary Logits
+        logits = lm_head(latent_vectors)
+        
         if logits.dim() == 3:
-            # Handle batched logits [B, L, D]
-            return torch.stack([self.sample(l) for l in logits])
-            
+            # Handle batched logits [B, L, V]
+            return torch.stack([self._sample_logits(l) for l in logits])
+        return self._sample_logits(logits)
+
+    def _sample_logits(self, logits):
+        """Internal method performing the actual temperature/Top-K/Top-P scaling on logits."""
         # 1. Temperature scaling
         logits = logits / max(self.temperature, 1e-5)
         
@@ -46,17 +53,26 @@ class ThunderTokenSampler:
             
         # 4. Final Sampling
         probs = F.softmax(logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
+        next_tokens = torch.multinomial(probs, num_samples=1)
         
-        return next_token
+        return next_tokens
 
-    def crystallize_sampling(self, latent, noise_level):
+    def crystallize_sampling(self, latent_field, lm_head, noise_level):
         """
         Specialized sampling for diffusion where the 'noise' level 
-        dictates the randomness of the sampling.
+        dictates the randomness (temperature) of the projection.
         Higher noise -> higher temperature/randomness.
         """
+        # Dynamic temperature based on the estimated noise level remaining
         dynamic_temp = self.temperature * (1.0 + noise_level)
-        # In a real implementation, this would involve a reverse-diffusion step
-        # mapped to token space via the embedding/unembedding layers.
-        return self.sample(latent / dynamic_temp)
+        
+        # Temporarily override temperature for this sampling step
+        original_temp = self.temperature
+        self.temperature = dynamic_temp
+        
+        sampled_tokens = self.sample(latent_field, lm_head)
+        
+        # Restore original temperature
+        self.temperature = original_temp
+        
+        return sampled_tokens
