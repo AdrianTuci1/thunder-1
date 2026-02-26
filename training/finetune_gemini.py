@@ -32,6 +32,11 @@ class ThunderTrainer(SFTTrainer):
         embeddings = embed_module(input_ids) # [B, L, D]
 
         # 2. Sample noise and degrade signal
+        # For full-sequence generation, if we don't have explicit prompt boundaries
+        # in the input dict, we noise the whole sequence. In a production text-diffusion
+        # model, you would typically mask the prompt condition so it remains clean `z_0`,
+        # but the model adapter handles `condition` + `latent_field` during inference.
+        # Here we train it as an unconditional sequence layout or condition it if we split it.
         noise = torch.randn_like(embeddings)
         noisy_embeddings = self.noise_scheduler.add_noise(embeddings, noise, t)
 
@@ -48,18 +53,14 @@ class ThunderTrainer(SFTTrainer):
         # from the hidden states of the backbone.
         predicted_noise = model.predict_noise(outputs.hidden_states[-1], t)
 
-        # 5. Calculate HybridLoss (SNR-weighted Denoising + Boundary Coherence)
+        # 5. Calculate Denoising Loss
         # Normalize t to [0, 1] for SNR calculation
         t_norm = t.float() / self.noise_scheduler.num_train_timesteps
-        
-        # Boundaries: (tile_a_overlap, tile_b_overlap)
-        boundaries = inputs.get("tile_boundaries", None)
         
         loss = self.hybrid_loss_fn.calculate_loss(
             predicted_noise=predicted_noise,
             target_noise=noise,
-            timesteps=t_norm,
-            tile_boundaries=boundaries
+            timesteps=t_norm
         )
 
         return (loss, outputs) if return_outputs else loss

@@ -4,14 +4,9 @@ Centralized dictionary for all performance tuning and architectural parameters.
 """
 
 THUNDER_CONFIG = {
-    # --- ENGINE & TILING ---
+    # --- ENGINE ---
     "engine": {
-        "meso_size": 8192,       
-        "micro_size": 512,       # EXTREME PARALLELISM: 512 tokens per CUDA leaf
-        "overlap_size": 128,     # Reduced overlap for finer granularity
-        "max_seq_len": 16384,    # TARGET: 16k testing window
-        "max_tree_depth": 4,     # Deeper tree for 512 leaf nodes
-        "subdivision_factor": 8, # Each node splits into 8 parallel branches
+        "max_seq_len": 16384,    # TARGET: 16k testing window natively
     },
     
     # --- HARDWARE & ACCELERATION (RTX 4090 / Ada Lovelace) ---
@@ -40,8 +35,6 @@ THUNDER_CONFIG = {
         "scaling": {
             "complexity_weight": 0.5,
             "length_weight": 0.3,   # log-scale multiplier for predicted response length
-            "coherence_scale": 0.15, # Force applied to nudge latents towards macro context
-            "fusion_anchor_strength": 0.8, # Strength of the anchor constraint at boundaries
         }
     },
     
@@ -85,7 +78,6 @@ THUNDER_CONFIG = {
         # Noise & Loss
         "num_train_timesteps": 1000, # Steps in the noise degradation schedule
         "noise_schedule_type": "cosine", # "linear", "cosine", or "sigmoid"
-        "boundary_weight": 0.1,      # Weight of the boundary coherence loss component
     },
     
     # --- SERVER & INTERFACE ---

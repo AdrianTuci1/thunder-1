@@ -78,45 +78,63 @@ class ThunderModelAdapter:
         self.enable_bidirectional_attention()
         return self.model
 
-    def enable_global_field_coupling(self):
+    def enable_bidirectional_attention(self):
         """
         Activates global coupling across the latent field.
         Turns the backbone into a non-causal noise predictor where every 
-        position can influence all others simultaneously.
+        position can influence all others simultaneously (Full Sequence Attention).
         """
         print("⚡ Thunder: Activating Global Field Coupling (Non-Causal Diffusion)...")
         
-        # In the context of a diffusion model, we disable any causal masking.
+        # In the context of a diffusion model, we disable causal masking.
         # This allows the model to treat the entire sequence as a single field.
         if hasattr(self.model.config, "is_causal"):
             self.model.config.is_causal = False
+            
+        # For Phi/Llama models, we often need to monkey patch the attention 
+        # forward pass or rely on `is_causal=False` flowing down to the attention math.
+        # Unsloth handles this mostly via config, but we ensure it's set globally.
+        self.model.config.use_cache = False # Not useful for diffusion (we don't autoregress)
 
-        # Register hooks to inject global context or modify internal coupling
-        for name, module in self.model.named_modules():
-            # Targets core computational blocks of any backbone (Phi, Mamba, etc.)
-            if any(target in name for target in ["layers", "mixer", "attn"]):
-                # Point for injecting global field information (like timestep)
-                pass
-
-    def predict_noise(self, latent_field, t):
+    def predict_noise(self, latent_field, t, condition=None):
         """
         Main interface for noise prediction (ε-prediction).
         Takes a latent field (noisy embeddings) and a timestep, returns predicted noise.
+        Optionally takes a 'condition' (clean prompt embeddings) to prepend.
         """
         # 1. Inform the backbone about the current diffusion temporal stage
         t_embed = self.model.timestep_embedder(t) # [B, D]
         t_embed_seq = t_embed.unsqueeze(1).expand(-1, latent_field.shape[1], -1)
         
-        # 2. Residual coupling of temporal info into the field
+        # 2. Residual coupling of temporal info into the noisy field
         coupled_field = latent_field + t_embed_seq
         
-        # 3. Model forward pass through the non-causal backbone
+        # 3. Concatenate prompt (clean) + z_t (noisy) if condition is provided
+        if condition is not None:
+            # condition: [B, L_prompt, D]
+            # coupled_field: [B, L_latent, D]
+            # Full input: [prompt | z_t]
+            model_input = torch.cat([condition, coupled_field], dim=1)
+        else:
+            model_input = coupled_field
+        
+        # 4. Model forward pass through the non-causal backbone
+        # The model "sees" the full sequence symmetrically: prompt + z_t together.
         outputs = self.model(
-            inputs_embeds=coupled_field,
+            inputs_embeds=model_input,
             output_hidden_states=True,
             return_dict=True
         )
         
-        # 4. Project hidden states to noise prediction via DenoisingHead
+        # 5. Extract only the predictions corresponding to the noisy latent part
         last_hidden = outputs.hidden_states[-1]
-        return self.model.denoising_head(last_hidden)
+        
+        if condition is not None:
+            # Slice off the prompt part: we only predict noise for z_t
+            prompt_len = condition.shape[1]
+            latent_hidden = last_hidden[:, prompt_len:, :]
+        else:
+            latent_hidden = last_hidden
+            
+        # 6. Project hidden states to noise prediction via DenoisingHead
+        return self.model.denoising_head(latent_hidden)

@@ -104,23 +104,4 @@ class ThunderDataPipeline:
         
         return dataset
 
-    def shard_for_fractal(self, tokens, meso_size=16384, micro_size=2048):
-        """
-        Splits tokens into the Macro/Meso/Micro hierarchy for training.
-        Ensures temporal consistency for the bidirectional denoising loss.
-        """
-        total_len = len(tokens)
-        shards = []
-        
-        for i in range(0, total_len, meso_size):
-            meso_shard = tokens[i : i + meso_size]
-            micro_shards = [
-                meso_shard[j : j + micro_size] 
-                for j in range(0, len(meso_shard), micro_size)
-            ]
-            shards.append({
-                "meso_index": i // meso_size,
-                "micro_shards": micro_shards
-            })
-            
-        return shards
+

@@ -2,7 +2,8 @@
 
 /**
  * THUNDER ENGINE: Fused Diffusion Operations
- * Minimizes global memory traffic by combining multiple diffusion steps.
+ * Minimizes global memory traffic by combining multiple element-wise
+ * operations. Optimized for full-sequence arrays.
  */
 
 __global__ void fused_diffusion_kernel(float *__restrict__ data,
@@ -12,11 +13,9 @@ __global__ void fused_diffusion_kernel(float *__restrict__ data,
   if (i >= size)
     return;
 
-  // Fused operations: Scale + Bias + Boundary Smoothing
+  // Fused operations: Scale + Bias (No boundary smoothing logic required)
   float val = data[i];
   val = (val * 1.05f) + bias[i];
-
-  // Boundary smoothing logic (Placeholder)
 
   data[i] = val;
 }
