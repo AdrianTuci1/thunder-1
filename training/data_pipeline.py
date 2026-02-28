@@ -32,7 +32,8 @@ class ThunderDataPipeline:
         for name in dataset_names:
             print(f"⚡ Thunder: Loading dataset {name}...")
             # Load dataset (SlimOrca is large, we use streaming or just the train split)
-            ds = load_dataset(name, split="train")
+            split_name = "train_sft" if "ultrafeedback" in name.lower() else "train"
+            ds = load_dataset(name, split=split_name)
             
             # 1. Normalize columns to a common "text" format if needed
             # UltraFeedback and SlimOrca have different structures
@@ -90,16 +91,24 @@ class ThunderDataPipeline:
             return dataset.map(format_orca, remove_columns=dataset.column_names)
             
         elif "LongAlign" in name:
-            # LongAlign usually has instruction/output or a flat structure
+            # LongAlign has a 'messages' list of dicts with 'role' and 'content'
             def format_long(example):
-                return {"text": f"### User:\n{example.get('instruction', example.get('prompt', ''))}\n\n### Assistant:\n{example.get('output', example.get('response', ''))}"}
+                text = ""
+                for msg in example.get("messages", []):
+                    role = "User" if msg["role"] == "user" else "Assistant"
+                    text += f"### {role}:\n{msg['content']}\n\n"
+                return {"text": text.strip()}
             return dataset.map(format_long, remove_columns=dataset.column_names)
 
-        elif "ultrafeedback" in name:
-            # UltraFeedback often has 'instruction' and 'response' or 'text'
+        elif "ultrafeedback" in name.lower():
+            # UltraFeedback binarized has a 'chosen' column with a list of message dicts
             if "text" not in dataset.column_names:
                 def format_ultra(example):
-                    return {"text": f"### User:\n{example['instruction']}\n\n### Assistant:\n{example['response']}"}
+                    text = ""
+                    for msg in example.get("chosen", []):
+                        role = "User" if msg["role"] == "user" else "Assistant"
+                        text += f"### {role}:\n{msg['content']}\n\n"
+                    return {"text": text.strip()}
                 return dataset.map(format_ultra, remove_columns=dataset.column_names)
         
         return dataset

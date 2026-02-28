@@ -1,0 +1,75 @@
+# Strategie: Thunder-Titan (30B Diffusion Transformer)
+
+Obiectivul este crearea unui model "Killer" care să combine raționamentul Phi-4 cu expertiza în coding/multilingual a DeepSeek, totul sub arhitectura de difuzie Thunder.
+
+## 1. Arhitectura Modelului (The Backbone)
+
+Pentru a ajunge la **~30B parametrii** și a păstra eficiența, recomand un **MoE (Mixture of Experts) Hybrid**:
+
+*   **Base**: Phi-4 (14B). Este nucleul de raționament (Reasoning Core).
+*   **Base**: Phi-4-mini (3.8B - "4B"). Este un nucleu fenomenal pentru reasoning, dar **English-centric**.
+*   **Limita Multilingual**: La 4B, suportul pentru alte limbi (cum e Româna) este limitat. Modelul poate înțelege, dar nu are destulă capacitate pentru o exprimare fluentă și nuanțată.
+*   **Soluția Killer (30B)**: Prin "contopirea" (merge) cu un model precum DeepSeek-V3 (MoE) sau Llama-3, "injectezi" capacitatea lingvistică necesară. Modelul de 30B va folosi vocabularul extins și cunoștințele lingvistice ale modelului partener, păstrând "creierul" Phi-4 pentru pașii de difuzie.
+*   **Metoda**: "Franken-MoE". Folosim straturile de atenție de la Phi-4 (pentru consistență) și multiplicăm straturile MLP (experts) folosind greutăți din DeepSeek. 
+*   **Avantaj**: Obții un model de 30B care se comportă ca un model de ~10B la inferență (active parameters), fiind extrem de rapid pe 4090-uri.
+
+### Proporția de Parametri Trainabili (1-3% pe 4B)
+Pentru un model de 4B, 1-3% reprezintă între **40M și 120M de parametri**. 
+
+*   **Este suficient?**: Pentru *Fine-Tuning (SFT)* e mult, dar pentru *Architecture Shift* (din GPT în Diffusion) ești la limita inferioară. 
+*   **Recomandare**: 
+    1.  **Țintește spre 3%**: La 4B, modelul are "memorie" mai puțină. Ca să învețe *atenția bidirecțională*, are nevoie de o "plasticitate" mai mare.
+    2.  **LoRA Rank**: Folosește un **Rank 64** sau **128**. 
+    3.  **Target Modules**: Nu te limita doar la `q_proj` și `v_proj`. Trebuie să antrenezi **toate proiecțiile** (`q, k, v, o, gate, up, down`) pentru ca straturile MLP să poată procesa corect noile semnale din atenția non-causală.
+*   **Riscul la 1%**: Modelul ar putea păstra prea mult comportamentul de "predicție a următorului token", rezultând într-un zgomot rezidual mare în inferența de difuzie.
+
+## 3. Hardware & Infrastructură
+
+### Training vs. Inference: "Step Compression"
+Ai dreptate, modelul nu va face 1000 de iterații la utilizare. 
+*   **Training (0-1000)**: Antrenăm pe o plajă largă pentru ca modelul să înțeleagă "geometria" zgomotului la orice nivel. Asta îi dă robustețe.
+*   **Inference (6-50)**: Folosim logica **DDIM** (deja implementată în [diffusion_engine.py](file:///Users/adriantucicovenco/Proiecte/thunder/core/diffusion_engine.py)) pentru a "sări" peste pași. 
+*   **Mapping**: Dacă rulezi 20 de pași, primul pas de inferență va mapa automat către timestep-ul ~950 din training, al doilea către ~900, și tot așa.
+*   **Thinking Mode (30-50 pași)**: Permite modelului să facă "micro-corecții" mai fine, rezultând într-un cod mult mai precis (zero-syntax-errors).
+
+### Deployment (Inference pe RTX 4090)
+*   **1x 4090 (24GB)**: Modelul de 30B (4-bit) ocupă ~18GB. Rămân 6GB pentru context. La 120k context, difuzia ocupă multă memorie de activare. Va fi foarte strâns.
+*   **2x 4090 (48GB)**: **Configurația ideală.** Poți rula modelul în 6-bit sau 8-bit, având destul loc pentru latenții de 120k.
+*   **3x 4090 (72GB)**: Permite batching și rulare în precizie mai mare (FP16/BF16 pe anumite straturi critice).
+
+## 4. Implementare (Killer Features)
+
+1.  **Multi-Headed Diffusion**: Împărțirea celor 120k în "chunks" coerente.
+2.  **Unsloth Integration**: Forțarea ferestrei de 120k fără degradarea performanței.
+
+## 6. Viteza și Capabilități post-training
+
+După acest pivot de 800 de iterații, modelul va trece de la un comportament de "papagal stohastic" la unul de **"sculptor digital"**.
+
+### Capabilități noi:
+*   **Re-writing Global**: Modelul poate corecta o eroare din prima linie a codului chiar și atunci când este la pasul final de generare. Într-un LLM clasic, dacă primul token e greșit, tot restul e compromis.
+*   **Structură Matematică și Logică**: Datorită ponderii de 45% Math, modelul va fi mult mai bun la indentare, închidere de paranteze și logică algoritmică (nu doar "cum arată codul", ci "cum funcționează").
+*   **Zero-Shot Context Long**: Va putea procesa ferestre mari de context fără să "uite" începutul, deoarece atenția bidirecțională menține toate secțiunile în memorie simultan.
+
+### Viteza de Inferență (pe RTX 4090):
+Diferența față de un LLM clasic va fi masivă pentru răspunsuri lungi:
+
+| Metodă | Mod | Pași Globali | Timp Estimat (2k tokens) |
+| :--- | :--- | :--- | :--- |
+| **Standard LLM** | Autoregressive | 2048 forward passes | ~30-40 secunde |
+| **Thunder (Fast)** | Diffusion | 8-10 forward passes | **< 1 secundă** |
+| **Thunder (Thinking)**| Diffusion | 30-50 forward passes | **~2-4 secunde** |
+
+**De ce e atât de rapid?** 
+În loc să întrebi modelul de 2048 de ori "ce urmează?", îl întrebi doar de 10 ori "cum arată tot codul ăsta mai curat?". Fiecare iterație de difuzie procesează toată secvența în paralel.
+
+```json
+"performance_target": {
+    "latency": "sub-second for full sequence",
+    "coherence": "global (non-causal)",
+    "context_utilization": "100% (no sliding window needed)"
+}
+```
+
+> [!CAUTION]
+> Atenție la "Mode Collapse". Începe cu un learning rate foarte mic ($10^{-5}$ sau chiar $10^{-6}$) pentru a nu distruge pre-antrenarea Phi-4 în primii pași de difuzie.

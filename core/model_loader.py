@@ -10,7 +10,7 @@ class ThunderModelLoader:
     """
     
     def __init__(self, model_name=None):
-        self.model_name = model_name or "unsloth/phi-4-mini-instruct"
+        self.model_name = model_name or "unsloth/Llama-3.2-3B-Instruct"
         self.max_seq_length = THUNDER_CONFIG["engine"]["max_seq_len"]
         self.model = None
         self.tokenizer = None
@@ -29,8 +29,8 @@ class ThunderModelLoader:
             device_map="auto"
         )
         
-        # Enable faster inference
-        FastLanguageModel.for_inference(self.model)
+        # Enable faster inference - disabled during training otherwise it alters gradient caching
+        # FastLanguageModel.for_inference(self.model)
         
         return self.model, self.tokenizer
 

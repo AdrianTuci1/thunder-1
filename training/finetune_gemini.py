@@ -1,3 +1,7 @@
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from unsloth import FastLanguageModel
 from trl import SFTTrainer
 from transformers import TrainingArguments
@@ -32,26 +36,26 @@ class ThunderTrainer(SFTTrainer):
         embeddings = embed_module(input_ids) # [B, L, D]
 
         # 2. Sample noise and degrade signal
-        # For full-sequence generation, if we don't have explicit prompt boundaries
-        # in the input dict, we noise the whole sequence. In a production text-diffusion
-        # model, you would typically mask the prompt condition so it remains clean `z_0`,
-        # but the model adapter handles `condition` + `latent_field` during inference.
-        # Here we train it as an unconditional sequence layout or condition it if we split it.
         noise = torch.randn_like(embeddings)
         noisy_embeddings = self.noise_scheduler.add_noise(embeddings, noise, t)
 
-        # 3. Model forward pass
-        # Use inputs_embeds to bypass standard token embedding
+        # 3. Inject Timestep Information into the latent field
+        # This replaces the need for a separate model call inside predict_noise
+        t_embed = model.get_timestep_embedding(t, embeddings.shape[0], embeddings.shape[1])
+        final_embeddings = noisy_embeddings + t_embed
+
+        # 4. Model forward pass (SINGLE PASS)
         outputs = model(
-            inputs_embeds=noisy_embeddings,
+            inputs_embeds=final_embeddings,
+            attention_mask=inputs.get("attention_mask"),
             output_hidden_states=True,
-            return_dict=True
+            return_dict=True,
+            use_cache=False,
         )
         
-        # 4. Noise Prediction Layer (Adapted Non-Causal Diffusion)
-        # Use the adapter to integrate timestep info and predict noise (ε) 
-        # from the hidden states of the backbone.
-        predicted_noise = model.predict_noise(outputs.hidden_states[-1], t)
+        # 5. Noise Prediction Layer
+        # Project predictions correspond to the noisy latent part
+        predicted_noise = model.predict_noise(outputs.hidden_states[-1])
 
         # 5. Calculate Denoising Loss
         # Normalize t to [0, 1] for SNR calculation
@@ -63,7 +67,16 @@ class ThunderTrainer(SFTTrainer):
             timesteps=t_norm
         )
 
-        return (loss, outputs) if return_outputs else loss
+def unsloth_compile_bypass(func):
+    def wrapper(*args, **kwargs):
+        import torch._dynamo
+        with torch._dynamo.config.patch(disable=True):
+            return func(*args, **kwargs)
+    return wrapper
+
+# --- PATCH UNSLOTH Dynamo Bug ---
+# Unsloth forces torch.compile on compute_loss which breaks on Phi-3's LongRope
+ThunderTrainer.compute_loss = unsloth_compile_bypass(ThunderTrainer.compute_loss)
 
 class ThunderFinetuner:
     """
@@ -107,6 +120,10 @@ class ThunderFinetuner:
         except (ImportError, RuntimeError):
             has_bf16 = False
         
+        import unsloth
+        unsloth.is_bfloat16_supported = lambda: has_bf16
+        from transformers import Trainer
+        
         # Use ThunderTrainer instead of SFTTrainer
         trainer = ThunderTrainer(
             model=self.model,
@@ -140,6 +157,9 @@ class ThunderFinetuner:
         )
         
         print("⚡ Thunder: Starting Fine-tuning (Diffusion Loop)...")
+        gpu_stats = torch.cuda.get_device_properties(0)
+reserved_memory = torch.cuda.memory_reserved(0) / 1024**3
+print(f"GPU: {gpu_stats.name}. VRAM rezervat: {reserved_memory:.2f} GB")
         trainer.train()
         
         # Save the adapters and tokenizer
@@ -148,3 +168,28 @@ class ThunderFinetuner:
         self.tokenizer.save_pretrained(output_dir)
         
         return trainer
+
+if __name__ == "__main__":
+    from core.model_loader import ThunderModelLoader
+    from core.config_manager import THUNDER_CONFIG
+    
+    loader = ThunderModelLoader()
+    model, tokenizer = loader.load_model(load_in_4bit=THUNDER_CONFIG["hardware"]["load_in_4bit"])
+    
+    # Add LoRA adapters for fine-tuning
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r = THUNDER_CONFIG["training"]["lora_rank"],
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                          "gate_proj", "up_proj", "down_proj",],
+        lora_alpha = THUNDER_CONFIG["training"]["lora_alpha"],
+        lora_dropout = 0, 
+        bias = "none",    
+        use_gradient_checkpointing = "unsloth", 
+        random_state = THUNDER_CONFIG["training"]["seed"],
+        use_rslora = False,
+        loftq_config = None,
+    )
+    
+    finetuner = ThunderFinetuner(model, tokenizer)
+    finetuner.run_sft()

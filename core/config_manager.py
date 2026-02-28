@@ -6,7 +6,7 @@ Centralized dictionary for all performance tuning and architectural parameters.
 THUNDER_CONFIG = {
     # --- ENGINE ---
     "engine": {
-        "max_seq_len": 16384,    # TARGET: 16k testing window natively
+        "max_seq_len": 2048,    # TARGET: 16k testing window
     },
     
     # --- HARDWARE & ACCELERATION (RTX 4090 / Ada Lovelace) ---
@@ -19,9 +19,9 @@ THUNDER_CONFIG = {
     
     # --- DIFFUSION LOGIC ---
     "logic": {
-        "max_steps": 100,        # Maximum crystallization steps for high-fidelity output
+        "max_steps": 70,        # Maximum crystallization steps for high-fidelity output
         "min_steps": 5,          # Minimum steps for instant-pass generation
-        "default_steps": 50,     # Standard steps for balanced performance
+        "default_steps": 14,     # Standard steps for balanced performance
         "internal_threshold": 0.8, # Gating threshold for routing query internally
         
         # Mode-specific baseline steps
@@ -47,13 +47,13 @@ THUNDER_CONFIG = {
     
     # --- TRAINING & LORA ---
     "training": {
-        "lora_rank": 64,        # Rank (r) of LoRA adapters (higher = more complex reasoning)
-        "lora_alpha": 128,       # Scaling factor (alpha) for LoRA updates
-        "learning_rate": 2e-4,   # Initial learning rate for SFT sau 5e-5 daca nu scade loss-ul
-        "batch_size": 2,         # Per-device training batch size
-        "grad_accum": 4,         # Gradient accumulation steps
-        "max_steps": 60,         # Total number of training steps ( use 1200 )
-        "warmup_steps": 5,       # Linear warmup steps
+        "lora_rank": 128,        # Rank (r) for 3% param update on 4B (Architecture Shift)
+        "lora_alpha": 256,       # Scaled with r (alpha = 2 * r)
+        "learning_rate": 8e-5,   # Pivoted LR for stability after step 600
+        "batch_size": 1,         # Per-device training batch size (reduced for OOM)
+        "grad_accum": 8,         # Gradient accumulation steps (increased to keep effective BS)
+        "max_steps": 1600,       # Total number of training steps
+        "warmup_steps": 50,      # Increased warmup for stability
         "logging_steps": 1,      # Step interval for logging progress
         "optim": "adamw_8bit",   # Optimizer type (8-bit AdamW for VRAM efficiency)
         "weight_decay": 0.01,    # Weight decay for regularization
@@ -61,13 +61,15 @@ THUNDER_CONFIG = {
         "seed": 3407,            # Random seed for reproducibility
         "output_dir": "./thunder_finetuned", # Directory for saving model weights
         
-        # Data Pipeline
+        # Data Pipeline (Pivot @ Step 600)
         "dataset_name": [
-            "HuggingFaceH4/ultrafeedback_binarized",
             "Open-Orca/SlimOrca",
-            "THUDM/LongAlign"
+            "nickrosh/Evol-Instruct-Code-80k-v1",
+            "open-web-math/open-web-math",
+            "nomic-ai/gpt4all-j-prompt-generations",
+            "THUDM/LongAlign-10k"
         ],
-        "dataset_ratios": [0.5, 0.3, 0.2], # 50% alignment, 30% reasoning, 20% long context
+        "dataset_ratios": [0.1, 0.15, 0.45, 0.2, 0.1], # 45% Math for gradient anchor
         "num_proc": 4,           # Increased for faster mapping
         "packing": True,         # Enables Constant Length Packing for 120k tokens
         

@@ -31,6 +31,22 @@ class DenoisingHead(nn.Module):
     def forward(self, x):
         return self.proj(x)
 
+class EmbeddingBridge(nn.Module):
+    """
+    Translates discrete token embeddings into a continuous, isotropic latent space
+    suitable for Gaussian diffusion.
+    """
+    def __init__(self, hidden_size, latent_dim):
+        super().__init__()
+        # Optional projection if hidden_size != latent_dim
+        self.proj = nn.Linear(hidden_size, latent_dim) if hidden_size != latent_dim else nn.Identity()
+        # LayerNorm with NO learnable parameters to enforce N(0, I) distribution
+        self.norm = nn.LayerNorm(latent_dim, elementwise_affine=False)
+        
+    def forward(self, x):
+        x = self.proj(x)
+        return self.norm(x)
+
 class ThunderModelAdapter:
     """
     Injects LoRA adapters and activates bilateral convergence capabilities
@@ -40,11 +56,32 @@ class ThunderModelAdapter:
     def __init__(self, model):
         self.model = model
 
-    def apply_lora(self, r=64, lora_alpha=128, target_modules=None):
+    def freeze_bottom_layers(self, freeze_up_to=16):
+        """
+        Freezes the bottom layers of the model to act as a stable feature extractor.
+        """
+        print(f"⚡ Thunder: Freezing bottom {freeze_up_to} layers...")
+        
+        # Typically, Unsloth/HF models store layers in model.model.layers
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
+            layers = self.model.model.layers
+            for i in range(min(freeze_up_to, len(layers))):
+                for param in layers[i].parameters():
+                    param.requires_grad = False
+                
+        # Also freeze the base embeddings as they are the source of truth for the bridge
+        if hasattr(self.model, "model") and hasattr(self.model.model, "embed_tokens"):
+            for param in self.model.model.embed_tokens.parameters():
+                param.requires_grad = False
+
+    def apply_lora(self, r=128, lora_alpha=256, target_modules=None):
         """
         Applies LoRA adapters optimized for parallel denoising.
+        Only applied to unfrozen (upper) layers.
         """
         if target_modules is None:
+            # We want to target all linear projections to allow maximum plasticity
+            # for the bidirectional attention shift.
             target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", 
                              "gate_proj", "up_proj", "down_proj"]
 
@@ -62,19 +99,21 @@ class ThunderModelAdapter:
         )
         return self.model
 
-    def adapt_for_diffusion(self):
+    def adapt_for_diffusion(self, freeze_layers=16):
         """
-        Incorporate diffusion-specific layers into the backbone.
+        Incorporate diffusion-specific layers into the backbone and apply freezing.
         """
-        print("⚡ Thunder: Adapting architecture for Diffusion (Embedder + Head)...")
+        print("⚡ Thunder: Adapting architecture for Continuous Diffusion...")
         hidden_size = self.model.config.hidden_size
         # Assuming latent dim is the same as hidden size for simplified diffusion
         latent_dim = hidden_size 
         
         # Attach new components to the model object
+        self.model.embedding_bridge = EmbeddingBridge(hidden_size, latent_dim).to(self.model.device)
         self.model.timestep_embedder = TimestepEmbedder(latent_dim).to(self.model.device)
         self.model.denoising_head = DenoisingHead(hidden_size, latent_dim).to(self.model.device)
         
+        self.freeze_bottom_layers(freeze_up_to=freeze_layers)
         self.enable_bidirectional_attention()
         return self.model
 
@@ -96,45 +135,23 @@ class ThunderModelAdapter:
         # Unsloth handles this mostly via config, but we ensure it's set globally.
         self.model.config.use_cache = False # Not useful for diffusion (we don't autoregress)
 
-    def predict_noise(self, latent_field, t, condition=None):
+    def get_timestep_embedding(self, t, batch_size, seq_len):
+        """
+        Creates a temporal embedding field to be added to input embeddings.
+        """
+        t_embed = self.model.timestep_embedder(t) # [B, D]
+        return t_embed.unsqueeze(1).expand(-1, seq_len, -1)
+
+    def predict_noise(self, hidden_states, t=None, condition_len=0):
         """
         Main interface for noise prediction (ε-prediction).
-        Takes a latent field (noisy embeddings) and a timestep, returns predicted noise.
-        Optionally takes a 'condition' (clean prompt embeddings) to prepend.
+        Projects backbone hidden states back to noise space.
         """
-        # 1. Inform the backbone about the current diffusion temporal stage
-        t_embed = self.model.timestep_embedder(t) # [B, D]
-        t_embed_seq = t_embed.unsqueeze(1).expand(-1, latent_field.shape[1], -1)
-        
-        # 2. Residual coupling of temporal info into the noisy field
-        coupled_field = latent_field + t_embed_seq
-        
-        # 3. Concatenate prompt (clean) + z_t (noisy) if condition is provided
-        if condition is not None:
-            # condition: [B, L_prompt, D]
-            # coupled_field: [B, L_latent, D]
-            # Full input: [prompt | z_t]
-            model_input = torch.cat([condition, coupled_field], dim=1)
+        # If we have clean prompt conditioned prefix, slice it off
+        if condition_len > 0:
+            latent_hidden = hidden_states[:, condition_len:, :]
         else:
-            model_input = coupled_field
-        
-        # 4. Model forward pass through the non-causal backbone
-        # The model "sees" the full sequence symmetrically: prompt + z_t together.
-        outputs = self.model(
-            inputs_embeds=model_input,
-            output_hidden_states=True,
-            return_dict=True
-        )
-        
-        # 5. Extract only the predictions corresponding to the noisy latent part
-        last_hidden = outputs.hidden_states[-1]
-        
-        if condition is not None:
-            # Slice off the prompt part: we only predict noise for z_t
-            prompt_len = condition.shape[1]
-            latent_hidden = last_hidden[:, prompt_len:, :]
-        else:
-            latent_hidden = last_hidden
+            latent_hidden = hidden_states
             
-        # 6. Project hidden states to noise prediction via DenoisingHead
+        # Project hidden states to noise prediction via DenoisingHead
         return self.model.denoising_head(latent_hidden)

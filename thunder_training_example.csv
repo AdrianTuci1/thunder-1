@@ -1,0 +1,8 @@
+clean_text,timestep,description,example_representation
+"def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",0,"Ground Truth (Clean Code)","def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)"
+"def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",250,"Low Noise (Structure preserved points of noise)","def calculat#_fibonacci(n): ret%rn n if n <= 1 else calculat$_fibonacci(n-1) + ..."
+"def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",500,"Medium Noise (Semantics visible but garbled)","d#f c%lculat& f*bonacc!(n): r#t_rn n i# n <& 1 el$e ..."
+"def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",750,"High Noise (Only global layout visible)","##f c#l#u#a#e_f#b#nacc#(#): r#tu#n # i# # <= # e#s# ..."
+"def calculate_fibonacci(n): return n if n <= 1 else calculate_fibonacci(n-1) + calculate_fibonacci(n-2)",1000,"Maximum Noise (Pure Gaussian Latent)","[RANDOM_LATENT_FIELD_SIGNAL]"
+"Explain the concept of quantum entanglement in simple terms.",0,"Clean Reasoning Prompt","Explain the concept of quantum entanglement in simple terms."
+"Explain the concept of quantum entanglement in simple terms.",500,"Mid-Diffusion Reasoning State","Expl#in th# conc#pt of qu#ntum ent#nglem#nt in s#mpl# t#rms."
