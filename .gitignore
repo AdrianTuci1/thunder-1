@@ -9,3 +9,4 @@ thunder_prefixlm_llama/
 *.json
 .ipynb_checkpoints/
 .DS_Store
+unsloth_compiled_cache/
