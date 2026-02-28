@@ -1,0 +1,10 @@
+hardware: "RTX 4090"
+arch: "Ada Lovelace (sm_89)"
+vram_gb: 24
+optimization:
+  tensor_cores: true
+  fp8_support: true
+  bf16_support: true
+  max_parallel_streams: 128
+  memory_bandwidth_gb_s: 1008
+  p2p_enabled: false
