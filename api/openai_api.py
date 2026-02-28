@@ -62,9 +62,21 @@ def setup_openai_routes(thunder_instance):
             search_results = await search_agent.search(query)
             response_text = f"Thunder Search Results:\n{search_results}"
         else:
-            # Internal crystallization wait
-            await asyncio.sleep(steps_count * 0.01) 
-            response_text = "Thunder: Response crystallized successfully using hierarchical parallel diffusion."
+            # MERCURY 1 ADAPTATION: Use the new Dynamic Batcher for Inference
+            try:
+                # Construct PrefixLM context window
+                formatted_prompt = f"### User:\n{query}\n\n### Assistant:\n"
+                
+                if getattr(thunder_instance, "batcher", None):
+                    # Queues request into Dynamic Batching system (Mercury 1)
+                    # Mode (Instant/Fast/Thinking) dictates the optimal T calculation
+                    response_text = await thunder_instance.batcher.generate_async(formatted_prompt, mode=mode, guidance_scale=1.5)
+                else:
+                    await asyncio.sleep(steps_count * 0.01) 
+                    response_text = "Thunder (Stub): Response crystallized. (Batcher Offline)"
+            except Exception as e:
+                print(f"Diffusion generation error: {e}")
+                response_text = f"Thunder Engine Error: {str(e)}"
 
         formatted_response = thunder_instance.personality.apply_formatting(response_text)
         

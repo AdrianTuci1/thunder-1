@@ -22,11 +22,11 @@ class ThunderDataPipeline:
         """
         from datasets import interleave_datasets, load_dataset
         
-        dataset_names = dataset_names or THUNDER_CONFIG["training"]["dataset_name"]
+        dataset_names = dataset_names or THUNDER_CONFIG["pipeline"]["dataset_name"]
         if isinstance(dataset_names, str):
             dataset_names = [dataset_names]
             
-        ratios = THUNDER_CONFIG["training"].get("dataset_ratios", [1.0 / len(dataset_names)] * len(dataset_names))
+        ratios = THUNDER_CONFIG["pipeline"].get("dataset_ratios", [1.0 / len(dataset_names)] * len(dataset_names))
         
         loaded_datasets = []
         for name in dataset_names:
@@ -57,7 +57,7 @@ class ThunderDataPipeline:
             if augment:
                 # 1. Randomly sample timesteps for noise augmentation
                 # We simulate different stages of the diffusion process
-                t = torch.randint(0, self.noise_scheduler.num_train_timesteps, (1,)).item()
+                t = torch.randint(0, self.noise_scheduler.diffusion_steps, (1,)).item()
                 
                 # 2. In a real diffusion setup, we'd apply noise to embeddings/latents.
                 # Here we mark the element with the target noise level for the trainer.

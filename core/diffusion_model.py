@@ -21,8 +21,9 @@ class TimestepEmbedder(nn.Module):
         
         # Normalize t to [0, 1] for stable embedding
         # num_train_timesteps is usually 2000
+        # diffusion_steps (T) is usually 2000
         from core.config_manager import THUNDER_CONFIG
-        max_t = THUNDER_CONFIG["training"].get("num_train_timesteps", 2000)
+        max_t = THUNDER_CONFIG["diffusion"].get("diffusion_steps", 2000)
         t_norm = t.float() / max_t
         
         # Ensure t_norm is correct dtype (bfloat16 if supported, else float16)
@@ -88,6 +89,11 @@ class PrefixLMDiffusionAdapter:
         self.enable_bidirectional_attention()
         self.replace_forward_for_diffusion()
         
+        # EXPERIMENTAL: End-to-End Embedding Training (Paper Section 4.1)
+        # Unfreezing the embedding matrix so the model can learn to space out
+        # mathematical tokens from natural language tokens in the continuous domain.
+        self.model.get_input_embeddings().weight.requires_grad = True
+        
         # Ensure the model remembers it's adapted
         self.model.is_thunder_adapted = True
         
@@ -98,17 +104,24 @@ class PrefixLMDiffusionAdapter:
         os.makedirs(path, exist_ok=True)
         torch.save(self.model.timestep_embedder.state_dict(), os.path.join(path, "timestep_embedder.pt"))
         torch.save(self.model.x0_head.state_dict(), os.path.join(path, "x0_head.pt"))
-        print(f"⚡ Thunder PrefixLM: Diffusion layers saved to {path}")
+        
+        if self.model.get_input_embeddings().weight.requires_grad:
+            torch.save(self.model.get_input_embeddings().weight.data.cpu(), os.path.join(path, "custom_embeddings.pt"))
+            
+        print(f"⚡ Thunder PrefixLM: Diffusion layers and custom embeddings saved to {path}")
 
     def load_diffusion_layers(self, path):
         import os
         embed_path = os.path.join(path, "timestep_embedder.pt")
         head_path = os.path.join(path, "x0_head.pt")
+        custom_emb_path = os.path.join(path, "custom_embeddings.pt")
         
         if os.path.exists(embed_path):
             self.model.timestep_embedder.load_state_dict(torch.load(embed_path, map_location=self.model.device))
         if os.path.exists(head_path):
             self.model.x0_head.load_state_dict(torch.load(head_path, map_location=self.model.device))
+        if os.path.exists(custom_emb_path):
+            self.model.get_input_embeddings().weight.data.copy_(torch.load(custom_emb_path, map_location=self.model.device))
 
     def enable_bidirectional_attention(self):
         """

@@ -30,7 +30,7 @@ class DiffusionLMTrainer:
         self.config = config
         
         self.noise_scheduler = ThunderNoiseScheduler()
-        self.loss_fn = DiffusionLMLoss(t_round_penalty=config.get("t_round_penalty", 0.05))
+        self.loss_fn = DiffusionLMLoss(t_round_penalty=config.get("training", {}).get("t_round_penalty", 0.05))
         
         self.device = self.model.device
         self.dtype = self.model.dtype
@@ -42,7 +42,7 @@ class DiffusionLMTrainer:
         print(f"⚡ Thunder PrefixLM: Starting custom training loop on {self.device}...")
         
         # Prepare DataLoader
-        batch_size = self.config.get("batch_size", 4)
+        batch_size = self.config["training"].get("batch_size", 4)
         dataloader = DataLoader(
             dataset, 
             batch_size=batch_size, 
@@ -51,17 +51,17 @@ class DiffusionLMTrainer:
         )
         
         # Optimizer
-        learning_rate = self.config.get("learning_rate", 5e-5)
+        learning_rate = self.config["training"].get("learning_rate", 5e-5)
         # We want to optimize the base model (adapters) and our custom heads (x0_head, timestep_embedder)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         
-        epochs = self.config.get("epochs", 3)
+        epochs = self.config["training"].get("epochs", 3)
         num_training_steps = epochs * len(dataloader)
         
         lr_scheduler = get_scheduler(
             "cosine",
             optimizer=optimizer,
-            num_warmup_steps=self.config.get("warmup_steps", 100),
+            num_warmup_steps=self.config["training"].get("warmup_steps", 100),
             num_training_steps=num_training_steps
         )
         
@@ -77,22 +77,22 @@ class DiffusionLMTrainer:
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
                 
-                # 1. Get exact clean embeddings (x0) and STANDARDIZE them
-                # Llama-3.2 embeddings have std ~0.0197, mean ~0.0
-                emb_std = 0.02 # Calculated from diagnostics
+                # 1. Get exact clean embeddings (x0)
+                # We no longer force manual scaling (emb_std), allowing end-to-end training
+                # to construct its own semantic space geometry directly.
                 embedding_matrix = self.model.get_input_embeddings().weight # [V, H]
                 
-                # Standardized Matrix for Rounding Loss
-                std_embedding_matrix = embedding_matrix / emb_std
+                # Use raw Matrix for Rounding Loss
+                std_embedding_matrix = embedding_matrix
                 
                 clean_embeddings = self.model.get_input_embeddings()(input_ids) # [B, L, H]
-                # Map $x_0$ to $N(0, 1)$ space
-                standardized_x0 = clean_embeddings / emb_std
+                # Map $x_0$ to diffusion space using raw embeddings
+                standardized_x0 = clean_embeddings
                 
                 # 2. Sample random timesteps
                 bsz = input_ids.shape[0]
                 timesteps = torch.randint(
-                    0, self.noise_scheduler.num_train_timesteps, (bsz,), 
+                    0, self.noise_scheduler.diffusion_steps, (bsz,), 
                     device=self.device
                 ).long()
                 
@@ -110,23 +110,47 @@ class DiffusionLMTrainer:
                     if not hasattr(self.model, "diffusion_forward"):
                         raise RuntimeError("Model must be adapted for diffusion first.")
                     
+                    # --- Target: Classifier-Free Guidance and Self-Conditioning ---
+                    
+                    # A. Prompt Dropout (CFG Training)
+                    # We drop the conditional information (attention mask) 15% of the time
+                    # to train the unconditional prior for CFG at inference.
+                    cfg_mask = attention_mask.clone()
+                    # Prompt Dropout for Classifier-Free Guidance Training (CFG)
+                    cfg_drop_rate = self.config["diffusion"].get("cfg_drop_rate", 0.15)
+                    if torch.rand(1).item() < cfg_drop_rate:
+                        # Zeroing mask simulates an unconditional / padding-only input sequence
+                        cfg_mask = torch.zeros_like(cfg_mask)
+
+                    # B. Dual-Pass Self-Conditioning
+                    # 50% of the time, we do a no-grad pass to guess x0, then condition on it
+                    self_cond = None
+                    if torch.rand(1).item() < 0.5:
+                        with torch.no_grad():
+                            self_cond = self.model.diffusion_forward(
+                                x_t=noisy_latents, 
+                                t=timesteps, 
+                                attention_mask=cfg_mask
+                            ).detach()
+                    
                     x0_pred = self.model.diffusion_forward(
                         x_t=noisy_latents, 
                         t=timesteps, 
-                        attention_mask=attention_mask
+                        attention_mask=cfg_mask,
+                        self_cond=self_cond
                     )
                     
                     # 5. Compute Diffusion Losses (in Standardized Space)
                     logit_scale = (standardized_x0.size(-1) ** 0.5) + 1e-6
                     
-                    loss, mse_loss, l_round_loss = self.loss_fn.calculate_total_loss(
+                    loss, denoising_loss, _ = self.loss_fn.calculate_total_loss(
                         x0_pred=x0_pred,
                         x0_target=standardized_x0,
                         input_ids=input_ids,
                         embedding_weight=std_embedding_matrix,
                         t_indices=timesteps,
                         alphas_cumprod=self.noise_scheduler.alphas_cumprod,
-                        attention_mask=attention_mask,
+                        attention_mask=attention_mask, # Loss is calculated only on valid (non-padded) tokens
                         round_threshold=0.15,
                         logit_scale=logit_scale
                     )
@@ -150,20 +174,20 @@ class DiffusionLMTrainer:
                 # Logging
                 progress_bar.update(1)
                 progress_bar.set_postfix({
-                    "MSE": f"{mse_loss.item():.4f}", 
-                    "RND": f"{l_round_loss.item():.4f}" if l_round_loss > 0 else "N/A"
+                    "Loss": f"{loss.item():.4f}", 
+                    "Denoising": f"{denoising_loss.item():.4f}"
                 })
                 global_step += 1
                 
                 # Periodic Preview: Decode x0 for the sample with the LOWEST noise in this batch
                 # to see if coherence is emerging where it should.
-                if global_step % self.config.get("preview_steps", 20) == 0:
+                if global_step % self.config["training"].get("preview_steps", 20) == 0:
                     # Find index of minimum t in the batch
                     best_idx = torch.argmin(timesteps).item()
                     self._generate_preview(x0_pred[best_idx], input_ids[best_idx], timesteps[best_idx].item())
                 
                 # Save checkpoint occasionally
-                if global_step % self.config.get("save_steps", 500) == 0:
+                if global_step % self.config["training"].get("save_steps", 500) == 0:
                     self._save_checkpoint(global_step)
                     
             progress_bar.close()
@@ -186,10 +210,9 @@ class DiffusionLMTrainer:
         Decodes a single sample prediction in standardized space.
         """
         with torch.no_grad():
-            # Standardize logic for preview
-            emb_std = 0.02
+            # Raw embeddings for preview decoding
             embedding_matrix = self.model.get_input_embeddings().weight.detach()
-            std_embedding_matrix = embedding_matrix / emb_std
+            std_embedding_matrix = embedding_matrix
             
             # logit_scale for stability
             logit_scale = (single_x0_pred.size(-1) ** 0.5)
@@ -211,7 +234,7 @@ class DiffusionLMTrainer:
             print(f"--------------------------------------\n")
 
     def _save_checkpoint(self, step):
-        output_dir = self.config.get("output_dir", "./thunder_diffusion_checkpoints")
+        output_dir = self.config["training"].get("output_dir", "./thunder_diffusion_checkpoints")
         path = os.path.join(output_dir, f"checkpoint-{step}")
         os.makedirs(path, exist_ok=True)
         

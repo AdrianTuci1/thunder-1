@@ -48,10 +48,10 @@ class PrefixLMDiffusionEngine:
         Executes one reverse diffusion step with Grounding Fix (Zero-Drift Prompt).
         """
         device = x_t.device
-        num_train_timesteps = self.noise_scheduler.num_train_timesteps
+        diffusion_steps = self.noise_scheduler.diffusion_steps
         
-        t_now = int(( (total_steps - 1 - step_idx) / total_steps) * num_train_timesteps)
-        t_next = int(( (total_steps - 2 - step_idx) / total_steps) * num_train_timesteps) if (total_steps - 2 - step_idx) >= 0 else 0
+        t_now = int(( (total_steps - 1 - step_idx) / total_steps) * diffusion_steps)
+        t_next = int(( (total_steps - 2 - step_idx) / total_steps) * diffusion_steps) if (total_steps - 2 - step_idx) >= 0 else 0
         
         alpha_now = self.noise_scheduler.alphas_cumprod[t_now].to(device).to(self.model.dtype)
         alpha_next = self.noise_scheduler.alphas_cumprod[t_next].to(device).to(self.model.dtype) if t_now > 0 else torch.tensor(1.0, device=device, dtype=self.model.dtype)
@@ -116,15 +116,24 @@ class PrefixLMDiffusionEngine:
 
             return x_t_minus_1, token_ids, x0_pred, avg_conf
 
-    def generate(self, shape, embedding_matrix, steps=200, prompt_embeds=None, anchor_len=0, 
+    def generate(self, shape, embedding_matrix, steps=None, prompt_embeds=None, anchor_len=0, 
                  apply_clamping=True, guidance_scale=1.0, uncond_prompt_embeds=None, 
                  return_trajectory=False, early_stopping_patience=3):
         """
-        Generation in Standardized Space with Dynamic Early Stopping and Response-Only stability monitoring.
-        embedding_matrix: EXPECTS STANDARDIZED EMBEDDINGS (N(0, 1))
-        prompt_embeds: EXPECTS STANDARDIZED EMBEDDINGS (N(0, 1))
+        Generation with Dynamic Decoding Steps (10 to 100) based on complexity.
+        embedding_matrix: EXPECTS RAW EMBEDDINGS
+        prompt_embeds: EXPECTS RAW EMBEDDINGS
         """
-        print(f"⚡ Thunder PrefixLM: Generating (Steps: {steps}, CFG: {guidance_scale}, EarlyStop: {early_stopping_patience}, Grounded: True)...")
+        # Dynamic Steps Logic (Paper Section C: Downsampling)
+        # We scale steps between 10 (simple) and 100 (complex) depending on the prompt length
+        max_dynamic_steps = 100
+        min_dynamic_steps = 10
+        if steps is None:
+            # Heuristic: More context = harder diffusion problem, need more steps
+            complexity_factor = min(1.0, anchor_len / 512.0) # Assume 512 is "max" complexity for this heuristic
+            steps = int(min_dynamic_steps + (max_dynamic_steps - min_dynamic_steps) * complexity_factor)
+            
+        print(f"⚡ Thunder PrefixLM: Generating (Dynamic Steps: {steps}, CFG: {guidance_scale}, EarlyStop: {early_stopping_patience}, Grounded: True)...")
 
         device = self.model.device
         dtype = self.model.dtype
@@ -155,8 +164,10 @@ class PrefixLMDiffusionEngine:
             # This restricts premature hard-commitment.
             current_logit_scale = (logit_scale * 0.5) + (logit_scale * 0.5) * (step_idx / steps)
             
-            # 2. Clamping Trick: mostly for monitoring early, state update late
-            use_clamp = apply_clamping and (step_idx > int(steps * 0.8))
+            # 2. Iterative Clamping (Mercury 1 Adaptation)
+            # Apply clamping earlier in the intermediate steps (50% onwards) rather than just the final 20%
+            # This grounds the parallel generation and reduces accumulated rounding errors during coarse-to-fine refinement.
+            use_clamp = apply_clamping and (step_idx > int(steps * 0.5))
             
             new_state_clamped, current_token_ids, x0_pred_val, step_conf = self.process_single_step(
                 x_t=current_state, 

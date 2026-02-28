@@ -13,12 +13,11 @@ class ThunderScheduler:
         self.mode_configs = THUNDER_CONFIG["logic"]["modes"]
         self.scaling_configs = THUNDER_CONFIG["logic"]["scaling"]
 
-    def calculate_steps(self, tile_node=None, mode=None, predicted_length=100):
+    def calculate_steps(self, mode="fast", anchor_len=0):
         """
-        DYNAMIC STEPS: Determines iterations based on mode, complexity, and length.
+        DYNAMIC STEPS (Mercury 1): Determines optimal iterations based on mode and prompt complexity.
         """
         import math
-        import random
         
         # 1. Base steps from mode or default
         if mode and mode in self.mode_configs:
@@ -28,39 +27,11 @@ class ThunderScheduler:
             base_steps = self.default_steps
             limit_steps = self.max_steps
 
-        # 2. Depth factor: Leaf nodes are high-fidelity
-        if hasattr(tile_node, 'is_leaf') and tile_node.is_leaf:
-            base_steps = int(base_steps * 1.2)
-            
-        # 3. Complexity factor (Placeholder for entropy-based scoring)
-        complexity_score = random.uniform(0.8, 1.2)
+        # 2. Length scaling: log(anchor_len) factor
+        # Longer prompts usually imply more complex logic/reasoning required.
+        length_factor = 1.0 + (math.log10(max(1, anchor_len)) * self.scaling_configs["length_weight"])
         
-        # 4. Length scaling: log(predicted_length) factor
-        # Using log10(len) + 0.5 as a multiplier (e.g. 100 tokens -> 2+0.5 = 2.5x base? too much, let's use a weight)
-        length_factor = 1.0 + (math.log10(max(1, predicted_length)) * self.scaling_configs["length_weight"])
-        
-        dynamic_steps = int(base_steps * complexity_score * length_factor)
+        dynamic_steps = int(base_steps * length_factor)
         
         # Clamp between hardware min and mode-specific max
         return max(self.min_steps, min(limit_steps, dynamic_steps))
-
-    def get_adaptive_steps(self, tile_data):
-        """
-        Heuristic to determine optimal steps for a tile.
-        Complexity can be based on variance or entropy of the latent representation.
-        """
-        # Placeholder for complexity analysis logic
-        complexity = self._calculate_complexity(tile_data)
-        
-        if complexity > 0.8:
-            return self.max_steps
-        elif complexity < 0.2:
-            return self.min_steps
-        return self.default_steps
-
-    def _calculate_complexity(self, data):
-        """
-        Measures the information density of the tile.
-        """
-        # Mock complexity factor
-        return 0.5
