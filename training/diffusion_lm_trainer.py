@@ -1,3 +1,4 @@
+print("⚡ Thunder Trace: Script started, importing dependencies...", flush=True)
 import os
 import sys
 import torch
@@ -6,6 +7,7 @@ from torch.utils.data import DataLoader
 from transformers import get_scheduler
 from tqdm import tqdm
 
+print("⚡ Thunder Trace: Basic dependencies imported. Importing local modules...", flush=True)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config_manager import THUNDER_CONFIG
@@ -14,6 +16,7 @@ from core.diffusion_model import PrefixLMDiffusionAdapter
 from training.noise_scheduler import ThunderNoiseScheduler
 from training.loss_functions import DiffusionLMLoss
 from training.data_pipeline import ThunderDataPipeline
+print("⚡ Thunder Trace: All modules imported.", flush=True)
 
 class DiffusionLMTrainer:
     """
@@ -35,6 +38,25 @@ class DiffusionLMTrainer:
         self.device = self.model.device
         self.dtype = self.model.dtype
 
+        # 1. Setup output directory and scan for existing checkpoints
+        self.output_dir = self.config["training"].get("output_dir", "./thunder_diffusion_checkpoints")
+        self.saved_checkpoints = []
+        
+        if os.path.exists(self.output_dir):
+            import glob
+            import re
+            # Find all checkpoint directories
+            existing = glob.glob(os.path.join(self.output_dir, "checkpoint-*"))
+            # Sort by step number (e.g., checkpoint-500, checkpoint-1000)
+            def extract_step(path):
+                match = re.search(r"checkpoint-(\d+)", path)
+                return int(match.group(1)) if match else 0
+            
+            existing.sort(key=extract_step)
+            self.saved_checkpoints = existing
+            if len(self.saved_checkpoints) > 0:
+                print(f"⚡ Thunder: Detected {len(self.saved_checkpoints)} existing checkpoints in {self.output_dir}")
+
     def train(self, dataset):
         """
         Main training loop.
@@ -55,8 +77,15 @@ class DiffusionLMTrainer:
         # We want to optimize the base model (adapters) and our custom heads (x0_head, timestep_embedder)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         
+        max_steps = self.config["training"].get("max_steps", None)
         epochs = self.config["training"].get("epochs", 3)
-        num_training_steps = epochs * len(dataloader)
+        if max_steps is not None:
+            epochs = max(1, (max_steps + len(dataloader) - 1) // len(dataloader))
+            num_training_steps = max_steps
+        else:
+            num_training_steps = epochs * len(dataloader)
+        if max_steps is not None:
+            num_training_steps = max_steps
         
         lr_scheduler = get_scheduler(
             "cosine",
@@ -68,26 +97,23 @@ class DiffusionLMTrainer:
         self.model.train()
         
         global_step = 0
+        grad_accum_steps = self.config["training"].get("grad_accum", 1)
+        
+        print(f"⚡ Thunder: Training for {num_training_steps} total iterations (updates)...")
+        progress_bar = tqdm(total=num_training_steps, desc="Training")
         
         for epoch in range(epochs):
-            print(f"\nEpoch {epoch+1}/{epochs}")
-            progress_bar = tqdm(total=len(dataloader), desc="Training")
-            
             for step, batch in enumerate(dataloader):
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
                 
                 # 1. Get exact clean embeddings (x0)
-                # We no longer force manual scaling (emb_std), allowing end-to-end training
-                # to construct its own semantic space geometry directly.
                 embedding_matrix = self.model.get_input_embeddings().weight # [V, H]
-                
-                # Use raw Matrix for Rounding Loss
                 std_embedding_matrix = embedding_matrix
                 
                 clean_embeddings = self.model.get_input_embeddings()(input_ids) # [B, L, H]
-                # Map $x_0$ to diffusion space using raw embeddings
-                standardized_x0 = clean_embeddings
+                emb_scale = (clean_embeddings.size(-1) ** 0.5)
+                standardized_x0 = clean_embeddings * emb_scale
                 
                 # 2. Sample random timesteps
                 bsz = input_ids.shape[0]
@@ -98,7 +124,6 @@ class DiffusionLMTrainer:
                 
                 # 3. Add noise in the Standardized Space ($N(0, 1)$)
                 noise = torch.randn_like(standardized_x0)
-                # The scheduler works with cumprod alphas [0, 1], perfect for $N(0, 1)$ space
                 noisy_latents = self.noise_scheduler.add_noise(standardized_x0, noise, timesteps)
                 
                 # Default device type for autocast
@@ -107,23 +132,11 @@ class DiffusionLMTrainer:
                 # Use Automatic Mixed Precision for Forward and Loss
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16):
                     # 4. Forward Pass (PrefixLM)
-                    if not hasattr(self.model, "diffusion_forward"):
-                        raise RuntimeError("Model must be adapted for diffusion first.")
-                    
-                    # --- Target: Classifier-Free Guidance and Self-Conditioning ---
-                    
-                    # A. Prompt Dropout (CFG Training)
-                    # We drop the conditional information (attention mask) 15% of the time
-                    # to train the unconditional prior for CFG at inference.
                     cfg_mask = attention_mask.clone()
-                    # Prompt Dropout for Classifier-Free Guidance Training (CFG)
                     cfg_drop_rate = self.config["diffusion"].get("cfg_drop_rate", 0.15)
                     if torch.rand(1).item() < cfg_drop_rate:
-                        # Zeroing mask simulates an unconditional / padding-only input sequence
                         cfg_mask = torch.zeros_like(cfg_mask)
 
-                    # B. Dual-Pass Self-Conditioning
-                    # 50% of the time, we do a no-grad pass to guess x0, then condition on it
                     self_cond = None
                     if torch.rand(1).item() < 0.5:
                         with torch.no_grad():
@@ -140,9 +153,8 @@ class DiffusionLMTrainer:
                         self_cond=self_cond
                     )
                     
-                    # 5. Compute Diffusion Losses (in Standardized Space)
-                    logit_scale = (standardized_x0.size(-1) ** 0.5) + 1e-6
-                    
+                    # 5. Compute Diffusion Losses
+                    logit_scale = (standardized_x0.size(-1) ** 0.5)
                     loss, denoising_loss, _ = self.loss_fn.calculate_total_loss(
                         x0_pred=x0_pred,
                         x0_target=standardized_x0,
@@ -150,47 +162,54 @@ class DiffusionLMTrainer:
                         embedding_weight=std_embedding_matrix,
                         t_indices=timesteps,
                         alphas_cumprod=self.noise_scheduler.alphas_cumprod,
-                        attention_mask=attention_mask, # Loss is calculated only on valid (non-padded) tokens
+                        attention_mask=attention_mask,
                         round_threshold=0.15,
                         logit_scale=logit_scale
                     )
+                    
+                    # Scale loss for gradient accumulation
+                    loss = loss / grad_accum_steps
                 
                 # Safeguard against NaN Loss before backward
                 if torch.isnan(loss):
-                    print(f"\n[WARNING] NaN loss detected at step {global_step}! Skipping step.")
-                    optimizer.zero_grad()
+                    print(f"\n[WARNING] NaN loss detected! Skipping batch.")
                     continue
                     
-                # 6. Backward & Step
+                # 6. Backward
                 loss.backward()
                 
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                
-                # Logging
-                progress_bar.update(1)
-                progress_bar.set_postfix({
-                    "Loss": f"{loss.item():.4f}", 
-                    "Denoising": f"{denoising_loss.item():.4f}"
-                })
-                global_step += 1
-                
-                # Periodic Preview: Decode x0 for the sample with the LOWEST noise in this batch
-                # to see if coherence is emerging where it should.
-                if global_step % self.config["training"].get("preview_steps", 20) == 0:
-                    # Find index of minimum t in the batch
-                    best_idx = torch.argmin(timesteps).item()
-                    self._generate_preview(x0_pred[best_idx], input_ids[best_idx], timesteps[best_idx].item())
-                
-                # Save checkpoint occasionally
-                if global_step % self.config["training"].get("save_steps", 500) == 0:
-                    self._save_checkpoint(global_step)
+                # Optimizer Step (Gradient Accumulation)
+                if (step + 1) % grad_accum_steps == 0 or (step + 1) == len(dataloader):
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
                     
-            progress_bar.close()
+                    global_step += 1
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        "Loss": f"{loss.item() * grad_accum_steps:.4f}", 
+                        "Denoising": f"{denoising_loss.item():.4f}"
+                    })
+                    
+                    # Periodic Preview
+                    if global_step % self.config["training"].get("preview_steps", 20) == 0:
+                        best_idx = torch.argmin(timesteps).item()
+                        self._generate_preview(global_step, x0_pred[best_idx], input_ids[best_idx], timesteps[best_idx].item())
+                    
+                    # Save checkpoint occasionally
+                    if global_step % self.config["training"].get("save_steps", 500) == 0:
+                        self._save_checkpoint(global_step)
+                    
+                    if max_steps is not None and global_step >= max_steps:
+                        break
+            
+            if max_steps is not None and global_step >= max_steps:
+                break
+                
+        progress_bar.close()
+        if max_steps is not None and global_step >= max_steps:
+            print(f"\n⚡ Reached max_steps ({max_steps}). Stopping training.")
 
     def _collate_fn(self, features):
         """
@@ -205,22 +224,24 @@ class DiffusionLMTrainer:
         
         return {"input_ids": input_ids, "attention_mask": attention_mask}
         
-    def _generate_preview(self, single_x0_pred, single_target_ids, t_value):
+    def _generate_preview(self, step, single_x0_pred, single_target_ids, t_value):
         """
         Decodes a single sample prediction in standardized space.
         """
         with torch.no_grad():
-            # Raw embeddings for preview decoding
-            embedding_matrix = self.model.get_input_embeddings().weight.detach()
+            self.model.eval()
+            embedding_matrix = self.model.get_input_embeddings().weight
             std_embedding_matrix = embedding_matrix
             
             # logit_scale for stability
             logit_scale = (single_x0_pred.size(-1) ** 0.5)
             
             # Map latent to logits via standardized embedding matrix
-            # x0_pred is N(0, 1)
             logits = torch.matmul(single_x0_pred.to(std_embedding_matrix.dtype), std_embedding_matrix.t()) 
             logits = logits / logit_scale
+            
+            # Diagnostic stats
+            l_min, l_max = logits.min().item(), logits.max().item()
             
             pred_ids = torch.argmax(logits, dim=-1)
             
@@ -228,10 +249,13 @@ class DiffusionLMTrainer:
             clean_text = self.tokenizer.decode(single_target_ids, skip_special_tokens=True)
             pred_text = self.tokenizer.decode(pred_ids, skip_special_tokens=True)
             
-            print(f"\n--- PREVIEW (Step | t={t_value}) ---")
-            print(f"Target:  {clean_text[:120]}...")
-            print(f"Predict: {pred_text[:120]}...")
-            print(f"--------------------------------------\n")
+            print(f"\n--- PREVIEW (Step {step} | t={t_value}) ---")
+            print(f"Logit Range: [{l_min:.2f}, {l_max:.2f}]")
+            print(f"Target: {clean_text[:200]}...")
+            print(f"Predict: {pred_text[:200]}...")
+            print("-" * 38 + "\n")
+            
+            self.model.train()
 
     def _save_checkpoint(self, step):
         output_dir = self.config["training"].get("output_dir", "./thunder_diffusion_checkpoints")
@@ -246,11 +270,24 @@ class DiffusionLMTrainer:
         adapter = PrefixLMDiffusionAdapter(self.model)
         adapter.save_diffusion_layers(path)
         print(f"\n⚡ Checkpoint saved to {path}")
+        
+        # Keep only the last 'save_total_limit' checkpoints
+        self.saved_checkpoints.append(path)
+        save_total_limit = self.config["training"].get("save_total_limit", 3)
+        if save_total_limit is not None and len(self.saved_checkpoints) > save_total_limit:
+            import shutil
+            old_checkpoint = self.saved_checkpoints.pop(0)
+            if os.path.exists(old_checkpoint):
+                shutil.rmtree(old_checkpoint)
+                print(f"⚡ Removed old checkpoint {old_checkpoint}")
 
 def run_training():
+    print("⚡ Thunder Trace: Initializing run_training...")
     loader = ThunderModelLoader()
     # Load base Llama 3.2 3B
-    model, tokenizer = loader.load_model(load_in_4bit=THUNDER_CONFIG["hardware"]["load_in_4bit"])
+    print("⚡ Thunder Trace: Calling loader.load_model(inference_mode=False)...")
+    model, tokenizer = loader.load_model(load_in_4bit=THUNDER_CONFIG["hardware"]["load_in_4bit"], inference_mode=False)
+    print("⚡ Thunder Trace: Model and tokenizer loaded.")
     
     # 1. Ensure tokenizer has a pad token
     if tokenizer.pad_token is None:
@@ -267,25 +304,25 @@ def run_training():
     else:
         print("⚡ Thunder PrefixLM: Model already has LoRA adapters. Skipping re-application.")
         
-    model = adapter.adapt_for_diffusion()
+    # The model is already adapted for diffusion inside loader.load_model()
     
     # 3. Load dataset
+    print("⚡ Thunder Trace: Preparing datasets...")
     pipeline = ThunderDataPipeline(tokenizer)
-    dataset_name = THUNDER_CONFIG["training"].get("dataset_name", "Open-Orca/OpenOrca")
+    dataset_name = THUNDER_CONFIG["pipeline"].get("dataset_name")
     print(f"⚡ Thunder: Preparing dataset {dataset_name}...")
     dataset = pipeline.prepare_dataset(dataset_name, augment=False)
+    print("⚡ Thunder Trace: Dataset prepared.")
     
-    # Optional: grab a tiny subset for sanity checking if testing
-    dataset = dataset.select(range(min(5000, len(dataset)))) 
+    # dataset = dataset.select(range(min(5000, len(dataset)))) 
     
     # 4. Train
-    trainer_config = THUNDER_CONFIG["training"]
-    # Add diffusion specific config
-    trainer_config["t_round_penalty"] = 0.05
-    trainer_config["epochs"] = 3
-    trainer_config["preview_steps"] = 20 # Balanced preview frequency
+    # Add diffusion/training specific overrides directly to the global config
+    THUNDER_CONFIG["training"]["t_round_penalty"] = 0.05
+    THUNDER_CONFIG["training"]["preview_steps"] = 20 # Balanced preview frequency
     
-    trainer = DiffusionLMTrainer(model, tokenizer, trainer_config)
+    # Pass the full root config
+    trainer = DiffusionLMTrainer(model, tokenizer, THUNDER_CONFIG)
     trainer.train(dataset)
 
 if __name__ == "__main__":

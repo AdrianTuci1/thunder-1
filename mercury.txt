@@ -1,0 +1,689 @@
+Mercury: Ultra-Fast Language Models Based on Diffusion
+Inception Labs
+Samar Khanna*, Siddhant Kharbanda*, Shufan Li*, Harshit Varma*, Eric Wang*
+Sawyer Birnbaum∧, Ziyang Luo∧, Yanis Miraoui∧, Akash Palrecha∧
+Stefano Ermon♯, Aditya Grover♯, Volodymyr Kuleshov♯
+*∧♯equal core, cross-function, senior contributors listed alphabetically.
+hello@inceptionlabs.ai
+Abstract
+We present Mercury, a new generation of commercial-scale large language models (LLMs)
+based on diffusion. These models are parameterized via the Transformer architecture and
+trained to predict multiple tokens in parallel. In this report, we detail Mercury Coder, our first
+set of diffusion LLMs designed for coding applications. Currently, Mercury Coder comes in
+two sizes: Mini and Small. These models set a new state-of-the-art on the speed-quality fron-
+tier. Based on independent evaluations conducted by Artificial Analysis, Mercury Coder Mini
+and Mercury Coder Small achieve state-of-the-art throughputs of 1109 tokens/sec and 737 to-
+kens/sec, respectively, on NVIDIA H100 GPUs and outperform speed-optimized frontier models
+by up to10×on average while maintaining comparable quality. We discuss additional results
+on a variety of code benchmarks spanning multiple languages and use-cases as well as real-world
+validation by developers on Copilot Arena, where the model currently ranks second on quality
+and is the fastest model overall. We also release a public API atplatform.inceptionlabs.ai
+and free playground atchat.inceptionlabs.ai.
+Contents
+1 Introduction 2
+1.1 Contributions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+2 Inception Mercury Model F amily 3
+2.1 Training . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3
+2.2 Inference . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4
+3 Capabilities 5
+3.1 Baselines . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+3.2 Coding Capabilities . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+3.2.1 Evaluation Benchmarks . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5
+3.2.2 Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 6
+4 Acknowledgements 8
+1
+arXiv:2506.17298v1  [cs.CL]  17 Jun 2025
+1 Introduction
+Diffusion models have emerged as the state-of-the-art approach for generating images [34] and
+videos [7], consistently producing high-quality, coherent, and diverse content [36, 37, 19]. How-
+ever, the application of diffusion to discrete data—particularly language—has remained limited
+to small-scale experiments [4, 18, 25, 28, 35, 23]. The advantage of diffusion relative to classical
+autoregressive models lies in its ability to perform parallel generation, which can greatly improve
+speed, in addition to fine-grained control, reasoning, and multi-modal data processing capabil-
+ities. Scaling diffusion models to the size of modern large language models (LLMs) [3, 38, 16]
+while maintaining high performance has remained an open challenge.
+In this report, we introduce Mercury—the first family of large-scale diffusion-based language
+models by Inception Labs. Mercury models achieve state-of-the-art performance and efficiency
+relative to comparable autoregressive (AR) models. Specifically, we present Mercury Coder,
+a set of Mercury models optimized for code. A predominant use-case of generative AI is for
+coding applications. Over 84% of developers have experience with code LLMs, highlighting the
+growing role of generative AI in streamlining software development [2]. However, high per-user
+latency of prominent use-cases, such as auto-completion, code editing, and agentic workloads,
+limits wider adoption of coding applications. Accordingly, we focus our first set of Mercury
+models on coding.
+Mercury Coder models demonstrate strong performance on key coding benchmarks, high-
+lighting improved accuracy, correctness, and in-filling capabilities across commonly used pro-
+gramming languages. By generating tokens in parallel in a coarse-to-fine manner, our models
+make significantly better use of modern GPU architectures, which leads to a higher arithmetic
+intensity of the generation algorithm and overall improved computational efficiency. This dras-
+tically improves user experience, especially for latency-sensitive, decode-heavy applications such
+as coding assistants, agentic workloads, chain-of-thought reasoning, and edge computing. As AI
+inference demand continues to scale, diffusion models can reduce inference costs significantly,
+making them a more sustainable solution for large-scale AI deployment.
+0 200 400 600 800 1000 1200
+Output Speed (Output T okens per Second)
+12
+16
+20
+24
+28Artificial Analysis Coding Index
+GPT-4o mini
+Llama 3.1 8B
+Gemini 2.0 Flash-Lite
+Claude 3.5 Haiku
+Mistral Small 3
+Codestral (Jan '25)
+DeepSeek Coder V2 Lite
+Nova Micro
+Mercury Coder Mini
+Mercury Coder Small
+Command-R+ Qwen2.5 Coder 7B
+Most attractive quadrant
+Coding Index vs. Output Speed: Smaller models
+Artificial Analysis Coding Index (represents the average of LiveCodeBench & SciCode);
+Output Speed: Output T okens per Second; 1,000 Input T okens; Coding focused workload
+Figure 1: Quality vs. Speed Trade-offs for Mercury Coder models. We find that Mercury
+Coder models outperform other frontier models by up to 10x in throughput while maintaining
+comparable quality on challenging code generation benchmarks. Figure taken from third-party
+evaluations conducted by Artificial Analysis.
+2
+Notably, the Mercury models retain a Transformer-based architecture [40], ensuring compat-
+ibility with many of the modeling and system-level optimizations developed in recent years for
+scalable training and inference of large language models. When prompted with a query, instead
+of producing the answer one token at a time, the answer is generated in a coarse-to-fine way.
+Improvements are suggested by a neural network—in our case a Transformer model—which is
+trained on large amounts of data to globally improve the quality of the answer by modifying
+multiple tokens in parallel. Our models can be easily adapted for diverse applications by lever-
+aging established methodologies for instruction tuning and alignment and can serve as a drop-in
+replacement for autoregressive models with greatly improved inference-time efficiency.
+In the following sections, we detail the architecture, performance metrics, and potential
+applications of our diffusion-based language models. Our work represents a step toward more
+efficient, scalable, and controllable AI systems, with broad implications for the future of text
+generation and multi-modal AI.
+1.1 Contributions
+• This paper describes the Mercury family of diffusion large language models (dLLMs), a
+new generation of LLMs that push the frontier of fast, high-quality text generation.
+• Mercury is up to 10x faster than frontier speed-optimized LLMs. Our models run at over
+1000 tokens/sec on NVIDIA H100s, a speed previously possible only using custom chips.
+• In addition to ultra-fast speeds, our coding models are comparable in quality to high-
+speed commercial offerings on coding benchmarks covering diverse usecases, programming
+languages, and hardware backends.
+2 Inception Mercury Model Family
+This report introduces the Inception Mercury models, a line of speed-optimized dLLMs. Our
+first focus is on coding models. Coding is a highly latency sensitive domain and the ability to
+generate fast code directly influences user experience, agentic workloads, and complex reasoning.
+We present two models in the Mercury Coder series.
+1. Mercury Coder Mini Our Mini model features the highest speed as well as competitive
+quality. For the first time, we attain throughputs of 1100+ tokens/second on H100 GPUs
+in latency-optimized regimes, while maintaining quality comparable to that of popular
+speed-optimized, open-weights models.
+2. Mercury Coder Small Our Small model achieves benchmark performance that matches
+popular speed-optimized frontier models, while having 3-10x better throughput in latency-
+optimized regimes. They achieve speeds of 700+ tokens/second across coding workloads.
+2.1 Training
+The Mercury diffusion models are defined by a generation process that iteratively refines outputs
+in parallel starting from random noise and gradually transforming it into a sample from the
+data distribution. Our methods extend [28] through careful modifications to the data and
+computation to scale up learning. The overall model is trained on the order of trillions of tokens.
+The training data comprises a combination of web crawls along with carefully curated real and
+synthetic datasets derived from proprietary data sources. We conduct all our development on
+a large-scale cluster of NVIDIA H100s.
+More formally, we define our diffusion models via a pair of forward and reverse processes.
+The forward or noising processq starts from clean datax∈X(a sequence of natural language
+3
+tokens, e.g., a sequence of words) and defines a set of latent variableszt∈Xover time steps
+t = 1,...,Tvia a Markov process denoted asq(zt|zt−1). The latents zt represent increasingly
+noisy versions ofx, and the finalzT are designed to be distributed according to a known prior
+noise distributionp(zT ). The reverse or denoising processp generates data by first sampling
+zT∼p(zT ) and then applying a modelp(zt−1|zt) to iteratively denoise the data. This procedure
+defines a probability distributionp(x).
+The modelp is defined by learned parametersθ, hence we denote it bypθ. The parameters
+are chosen to minimize a loss that fitsp to reverseq. In practice, this can be achieved by first
+learning a denoising model, i.e., by minimizing
+L(x) =−Et [γ(t)·Ezt∼q logpθ(x|zt)],
+whereγ(t)≥0 is a user-specified function that assigns a weight to each noise level andpθ(x|zt)
+is a distribution over clean data x given noisy data zt. The denoiser can then be used for
+generation e.g., by definingpθ(zt−1|zt) = ∑
+xq(zt−1|zt, x)pθ(x|zt).
+Architecture Inception Mercury models are based on a Transformer architecture [40]. Note
+that this choice of architecture is orthogonal to the fact that the Mercury models are diffusion-
+based. Diffusion implies specific training and generation algorithms, but does not pose con-
+straints on the architecture of neural network that is trained. For example, a dLLM could also
+be based on a recurrent architecture [32, 17]. This is analogous to architecture choices for image
+diffusion models, in which the denoising network can also be parameterized with a U-Net [19]
+or a transformer [31]. Relying on a Transformer architecture has a number of advantages. It
+allows Mercury models to benefit from efficient implementations of low-level primitives, and it
+simplifies hyper-parameter search and optimization.
+Fine-tuning and Alignment InceptionMercuryModelscanbenefitfromfurtherpre-training,
+fine-tuning and alignment on downstream datasets via RLHF [30] or DPO [33] techniques to
+improve downstream performance. The key change for all stages is to replace the autoregressive
+loss with a denoising diffusion loss.
+Context Length Inception Mercury models support a context length of up to 32,768 tokens
+out of the box and up to 128k tokens with context extension approaches. This protocol follows
+standard training recipes used for developing language models [16, 42, 26].
+2.2 Inference
+Prompting In addition to generating full sequences from scratch, our inference methods
+support flexible generation conditioned on a prompt or context. Given that the Mercury models
+support conditional generation, and given that they can be trained, fine-tuned, and aligned
+on datasets that are analogous to those of traditional language models, the Mercury models
+also support prompting as in traditional LLMs. This includes zero-shot prompting, few-shot
+prompting [8], and chain-of-thought [41].
+Serving While prior diffusion models such as [28] show that it is possible to reduce the num-
+ber of forward pass iterations for sub-billion parameter models, they fail to show improvements
+in wall-clock efficiency. From a systems perspective, our algorithm’s speed advantages owe to its
+maximum utilization of the computing power available on commonly available hardware accel-
+erators, such as NVIDIA GPUs. To ensure maximum speed, we rely on a proprietary inference
+engine that implements highly efficient diffusion sampling. The engine features a dynamically
+batched sampling and paging implementation that can automatically navigate the speed/quality
+trade-off under production workloads. To push performance even further, we leverage a set of
+4
+custom kernels for parallel inference workloads. From a user’s perspective, we can expose to the
+user an API compatible with the OpenAI standard. This backwards compatiblity with existing
+APIs enables Mercury to serve as a drop-in replacement for autoregressive models.
+3 Capabilities
+This section provides an in-depth analysis on the capabilities of Mercury with regards to quality
+and decoding efficiency. Our model was tested on an API endpoint hosted in February 2025.
+3.1 Baselines
+We benchmark Mercury against four sets of autoregressive LLM baselines. These sets of models
+target different use cases and strike a different balance of accuracy and speed.
+Open-W eights Speed-Optimized Models We compare against models from the Llama
+3.1 [15], Qwen 2.5 [20], Mistral [29], and DeepSeek V2 [14] families.
+Open-W eights F rontier Models In this category, we compare against DeepSeek V3 [13]
+which is comparable to Claude 3.5 Sonnet [1] and GPT 4o [21] in performance, while being
+open-weights.
+Closed-W eights Speed-Optimized Models These proprietary models provide low per-
+token costs and fast inference speeds, often targeting deployment in latency-sensitive environ-
+ments and simpler tasks. They strike a balance between performance and cost, and can match
+frontier performance on tasks like summarization and auto-completion. For our evaluations, we
+consider models from the Claude 3.5 [1], GPT 4o [21], Gemini 2.0 Flash [12], Amazon Nova [22],
+and Codestral [39] families.
+Closed-W eights F rontier Models Closed-weights frontier models represent the state-of-
+the-art in language model performance. These models are typically at the top of LLM bench-
+marks; however, they are typically not publicly accessible for alignment or fine-tuning. In our
+comparisons, we include the leading proprietary models (GPT 4o [21], Claude 3.5 Sonnet [1]).
+Note however, that Mercury models are in a speed-optimized class that targets a different speed-
+cost-performance trade-off from frontier models; we include these numbers only for context.
+3.2 Coding Capabilities
+3.2.1 Evaluation Benchmarks
+We report the quality of our coding models across standard benchmarks. HumanEval [10] and
+MBPP [5] assess Python code generation based on test pass rates. EvalPlus [27] extends the
+evaluation to more test cases. LiveCodeBench [24] focuses on more sophisticated coding sce-
+narios. MultiPL-E [9] evaluates multi-language code generation across C++, JavaScript, Java,
+PHP, Bash, and TypeScript. FIM [6] measures code in-filling ability targeting autocomplete-like
+scenarios.
+Speed We compare the speed of Mercury to that of existing autoregressive models. We
+evaluate the speed of an end-to-end deployment of each type of model (i.e., we compare APIs).
+In the context of Mercury models, we evaluate a deployment on our custom serving engine on
+Nvidia hardware.
+5
+Table 1: Performance (pass@1) comparison of various models across different coding bench-
+marks, grouped by model category. ‘*’ indicates metrics as reported by Artificial Analysis.
+Model HumanEval* MBPP EvalPlus MultiPL-E LCB* BCB Speed
+Open-W eights Models
+Llama 3.1 8B Instruct 66.5 59.2 60.2 50.1 12.0 32.3 153
+DeepSeek Coder V2 Lite 79.0 59.8 68.3 57.0 16.0 44.4 93
+Mistral Small 3 84.8 69.6 72.3 70.1 25.0 42.7 126
+Qwen 2.5 Coder 7B Instruct 88.0 80.0 79.3 75.3 9.0 41.4 195
+F rontier Speed-Optimized Models
+Nova Micro 79.3 65.4 72.1 56.7 14.0 - 148
+Codestral 2501 85.0 72.2 75.6 73.4 24.0 46.1 171
+GPT 4o Mini 88.0 74.6 78.5 72.0 23.0 46.8 59
+Claude 3.5 Haiku 86.0 78.0 75.1 72.3 31.0 45.4 61
+Gemini 2.0 Flash Lite 90.0 75.0 77.3 79.5 18.0 44.4 201
+F rontier Models
+DeepSeek V3 92.1 81.0 82.1 79.1 36.0 50.0 27
+Claude 3.5 Sonnet 90.2 81.2 77.3 81.9 38.0 44.8 76
+GPT 4o 90.2 82.2 82.4 77.6 31.0 49.9 61
+Our Models
+Mercury Coder Mini 88.0 77.1 78.6 74.1 17.0 42.0 1109
+Mercury Coder Small 90.0 76.6 80.4 76.2 25.0 45.5 737
+We report results from an independent third-party evaluation of various APIs by the firm
+Artificial Analysis (AA)1. The evaluation relies of a series of coding-focused prompts featuring
+approximately 1,000 input and 1,000 output tokens and that are proprietary to AA. We use
+throughput (measured in output tokens/second) as our main measure of speed. Throughput is
+measured by performing inference on a target dataset and dividing the processing time from
+the first to that output token by the number of output tokens in the dataset.
+In order to compare the end-to-end speed of Mercury to existing models, we report the
+speed of commercial APIs for these models, as estimated by Artificial Analysis. These speed
+measurements correspond to a median throughput benchmarked by AA across cloud providers
+serving the model.
+3.2.2 Results
+Table 1 compares the performance of various models on key code generation benchmarks, in-
+cluding HumanEval, MBPP, EvalPlus, MultiPL-E, LiveCodeBench, and BigCodeBench.
+Overall Coding Performance Mercury Coder Mini, our smaller model, outperforms all
+open-weight models while being more than 8×faster and achieving speeds of around 1, 100
+tokens per second. This makes it a compelling choice for real-world applications that require
+high efficiency. Meanwhile, Mercury Coder Small performs on par with frontier speed-optimized
+models like Claude 3.5 Haiku and Gemini 2.0 Flash, and is also much faster. While some speed-
+optimized models are fast, there remains a trade-off between latency and accuracy—diffusion
+models significantly push the Pareto frontier.
+Performance Across Programming Languages We evaluate multiple code generation
+models on the MultiPL-E benchmark, assessing their performance across six programming lan-
+guages: C++, Java, JavaScript, PHP, Bash, and TypeScript. Table 2 presents the accuracy
+of each model, measured as the percentage of correct solutions generated. Among open-weight
+1https://artificialanalysis.ai/
+6
+Table 2: Performance comparison of various models on the MultiPL-E benchmark across dif-
+ferent programming languages (values in %).
+Model CPP Java JS PHP Bash TS A vg
+Open-W eights Models
+Llama 3.1 8B Instruct 54.0 48.7 57.8 49.1 34.8 55.9 50.1
+OpenCoder 8B Instruct 70.2 70.8 78.9 72.1 44.1 75.2 68.5
+Mistral Small 3 74.5 73.9 82.0 66.5 43.5 80.1 70.1
+Qwen 2.5 Coder 14B Instruct 77.6 55.9 83.9 61.5 46.0 83.9 68.1
+F rontier Speed-Optimized Models
+Nova Micro 59.6 57.1 67.7 62.1 23.6 70.2 56.7
+Codestral 2501 80.1 72.7 83.2 73.9 47.2 83.2 73.4
+GPT 4o Mini 78.3 73.4 82.0 71.4 46.6 80.1 72.0
+Claude 3.5 Haiku 75.2 78.5 79.5 73.3 45.3 82.0 72.3
+Gemini 2.0 Flash Lite 84.5 82.6 88.2 85.7 50.9 85.1 79.5
+F rontier Models
+DeepSeek V3 84.5 73.9 87.6 81.4 59.0 88.2 79.1
+Claude 3.5 Sonnet 82.0 88.6 89.4 83.2 57.8 90.6 81.9
+GPT 4o 79.5 81.0 87.0 78.3 52.8 87.0 77.6
+Our Models
+Mercury Coder Mini 78.9 74.5 78.9 72.7 56.5 83.2 74.1
+Mercury Coder Small 82.0 80.1 83.9 78.3 50.1 82.6 76.2
+models, Mistral Small 3 and OpenCoder 8B Instruct achieve the highest average performance.
+Frontier speed-optimized models, such as Gemini 2.0 Flash Lite and Codestral 2501, demon-
+strate strong results, outperforming many open-weight models while maintaining efficiency. Our
+models, Mercury Coder Mini and Mercury Coder Small, outperform open-weights models and
+show competitive performance to well-established speed-optimized models, especially in Java
+and JavaScript. These results highlight the effectiveness of diffusion in multi-language code
+generation.
+Fill-in-the-Middle We evaluate model performance on fill-in-the-middle (FIM) tasks, assess-
+ing their ability to generate missing code in single-line and random-span-light settings. Table 3
+presents results across different model categories. Among open-weight models, Qwen 2.5 Coder
+7B Instruct achieves the highest performance. Frontier speed-optimized models show stronger
+results, with Codestral 2501 leading the category, followed by GPT-4o Mini and Gemini 2.0
+Flash Lite, which maintain a balance between accuracy and efficiency. Our models, Mercury
+Coder Mini and Mercury Coder Small, achieve state-of-the-art performance in FIM tasks, sur-
+passing all evaluated models, including Codestral 2501. These results highlight the effectiveness
+of our models in code completion scenarios.
+Human Evaluation on Copilot Arena We complement our benchmark results with a hu-
+man evaluation against other models in the setting of code assistants. Specifically, we evaluated
+our Mercury Coder Mini on Copilot Arena [11], a platform in which users are presented with
+code completions from different models and provide their preference.
+On Copilot Arena, Mercury Coder Mini is tied for second place, surpassing the performance
+of speed-optimized models like GPT-4o Mini and Gemini-1.5-Flash and even of larger models
+like GPT-4o. At the same time, it is the fastest model, with an average latency of just 25 ms,
+about 4 times faster than GPT-4o Mini.
+7
+Table 3: Performance comparison of various models on the fill-in-the-middle (FIM) single-line
+and random-span-light benchmarks, grouped by model category.
+Model FIM Single-Line FIM Random-Span-Light A verage
+Open-W eights Models
+Llama 3.1 8B Instruct 37.9 11.0 24.5
+DeepSeek Coder V2 Instruct Lite 55.1 47.0 51.1
+Qwen 2.5 Coder 7B Instruct 89.6 56.1 72.9
+F rontier Speed-Optimized Models
+Claude 3.5 Haiku 63.6 27.4 45.5
+Gemini 2.0 Flash Lite 65.4 54.9 60.2
+GPT 4o Mini 74.8 47.0 60.9
+Codestral 2501 93.0 72.0 82.5
+Our Models
+Mercury Coder Mini 92.9 71.5 82.2
+Mercury Coder Small 93.1 76.5 84.8
+Table 4: Co-Pilot Arena model comparison by latency, Elo scores, and ranks. Data obtained
+via Copilot Arena.
+Model Latency (seconds) Latency Rank Elo Score Elo Rank
+DeepSeek V2.5 (FIM) 2.07 11 1025 1
+Claude 3.5 Sonnet 1.46 8 1003 1
+Mercury Coder Mini 0.25 1 993 2
+Codestral 0.31 2 992 2
+Metal Llama 3.1 405B 1.84 10 982 3
+GPT-4o 0.76 5 980 3
+Gemini 1.5 Flash 0.59 3 977 3
+Gemini 1.5 Pro 1.48 9 977 5
+Meta Llama 3.1 70B 1.17 7 970 5
+Qwen 2.5 Coder 32B 0.91 6 949 12
+GPT-4o Mini 0.84 4 939 12
+Scaling Modern large language models scale in performance as their size and training data
+increase. While most research focuses on autoregressive models, the scaling properties of diffu-
+sion large language models are less well understood. We observe that the performance of our
+larger Small model is consistently better than that of Mini across all benchmarks. These results
+highlight the potential of further scaling dLLMs.
+4 Acknowledgements
+We are grateful to the teams at Artificial Analysis and Copilot Arena for their support in
+independent third-party evaluation of our models.
+References
+[1] The claude 3 model family: Opus, sonnet, haiku. URLhttps://api.semanticscholar.
+org/CorpusID:268232499.
+[2] 9CV9. Top latest ai code generator statistics and trends in 2024, 2024. URLhttps://
+blog.9cv9.com/top-latest-ai-code-generator-statistics-and-trends-in-2024 .
+8
+[3] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni
+Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4
+technical report. arXiv preprint arXiv:2303.08774 , 2023.
+[4] Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den Berg.
+Structured denoising diffusion models in discrete state-spaces.Advances in Neural Infor-
+mation Processing Systems, 34:17981–17993, 2021.
+[5] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David
+Dohan, EllenJiang, CarrieJ.Cai, MichaelTerry, QuocV.Le, andCharlesSutton. Program
+synthesis with large language models.ArXiv, abs/2108.07732, 2021. URL https://api.
+semanticscholar.org/CorpusID:237142385.
+[6] Mo Bavarian, Heewoo Jun, Nikolas A. Tezak, John Schulman, Christine McLeavey, Jerry
+Tworek, and Mark Chen. Efficient training of language models to fill in the middle.ArXiv,
+abs/2207.14255, 2022. URL https://api.semanticscholar.org/CorpusID:251135268.
+[7] Tim Brooks, Bill Peebles, Connor Holmes, Will DePue, Yufei Guo, Li Jing, David Schnurr,
+JoeTaylor, TroyLuhman, EricLuhman, etal. Videogenerationmodelsasworldsimulators.
+OpenAI Blog, 1:8, 2024.
+[8] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla
+Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Lan-
+guage models are few-shot learners. Advances in neural information processing systems ,
+33:1877–1901, 2020.
+[9] Federico Cassano, John Gouwar, Daniel Nguyen, Sy Duy Nguyen, Luna Phipps-Costin,
+Donald Pinckney, Ming-Ho Yee, Yangtian Zi, Carolyn Jane Anderson, Molly Q. Feld-
+man, Arjun Guha, Michael Greenberg, and Abhinav Jangda. Multipl-e: A scalable
+and extensible approach to benchmarking neural code generation. 2022. URL https:
+//api.semanticscholar.org/CorpusID:254854172.
+[10] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Pondé, Jared Ka-
+plan, Harrison Edwards, Yura Burda, Nicholas Joseph, Greg Brockman, Alex Ray, Raul
+Puri, Gretchen Krueger, Michael Petrov, Heidy Khlaaf, Girish Sastry, Pamela Mishkin,
+Brooke Chan, Scott Gray, Nick Ryder, Mikhail Pavlov, Alethea Power, Lukasz Kaiser,
+Mo Bavarian, Clemens Winter, Philippe Tillet, Felipe Petroski Such, David W. Cummings,
+Matthias Plappert, Fotios Chantzis, Elizabeth Barnes, Ariel Herbert-Voss, William H.
+Guss, Alex Nichol, Igor Babuschkin, Suchir Balaji, Shantanu Jain, Andrew Carr, Jan
+Leike, Joshua Achiam, Vedant Misra, Evan Morikawa, Alec Radford, Matthew M. Knight,
+Miles Brundage, Mira Murati, Katie Mayer, Peter Welinder, Bob McGrew, Dario Amodei,
+Sam McCandlish, Ilya Sutskever, and Wojciech Zaremba. Evaluating large language mod-
+els trained on code.ArXiv, abs/2107.03374, 2021. URLhttps://api.semanticscholar.
+org/CorpusID:235755472.
+[11] Wayne Chi, Valerie Chen, Anastasios Nikolas Angelopoulos, Wei-Lin Chiang, Aditya Mit-
+tal, Naman Jain, Tianjun Zhang, Ion Stoica, Chris Donahue, and Ameet Talwalkar. Copilot
+arena: A platform for code llm evaluation in the wild.arXiv preprint arXiv:2502.09328 ,
+2025.
+[12] GoogleDeepMind. Gemini2.0Flash. https://deepmind.google/technologies/gemini/
+flash/. Accessed: 2025-03-18.
+[13] DeepSeek-AI, Aixin Liu, Bei Feng, Bing Xue, Bing-Li Wang, Bochao Wu, Chengda Lu,
+Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, Damai Dai, Daya Guo,
+9
+Dejian Yang, Deli Chen, Dong-Li Ji, Erhang Li, Fangyun Lin, Fucong Dai, Fuli Luo,
+Guangbo Hao, Guanting Chen, Guowei Li, H. Zhang, Han Bao, Hanwei Xu, Haocheng
+Wang, Haowei Zhang, Honghui Ding, Huajian Xin, Huazuo Gao, Hui Li, Hui Qu, J. L.
+Cai, Jian Liang, Jianzhong Guo, Jiaqi Ni, Jiashi Li, Jiawei Wang, Jin Chen, Jingchang
+Chen, Jingyang Yuan, Junjie Qiu, Junlong Li, Jun-Mei Song, Kai Dong, Kai Hu, Kaige
+Gao, Kang Guan, Kexin Huang, Kuai Yu, Lean Wang, Lecong Zhang, Lei Xu, Leyi Xia,
+Liang Zhao, Litong Wang, Liyue Zhang, Meng Li, Miaojun Wang, Mingchuan Zhang,
+Minghua Zhang, Minghui Tang, Mingming Li, Ning Tian, Panpan Huang, Peiyi Wang,
+Peng Zhang, Qiancheng Wang, Qihao Zhu, Qinyu Chen, Qiushi Du, R. J. Chen, R. L.
+Jin, Ruiqi Ge, Ruisong Zhang, Ruizhe Pan, Runji Wang, Runxin Xu, Ruoyu Zhang, Ruyi
+Chen, S. S. Li, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shao-Ping Wu, Shengfeng
+Ye, Shirong Ma, Shiyu Wang, Shuang Zhou, Shuiping Yu, Shunfeng Zhou, Shuting Pan,
+T. Wang, Tao Yun, Tian Pei, Tianyu Sun, W. L. Xiao, Wangding Zeng, Wanjia Zhao,
+Wei An, Wen Liu, Wenfeng Liang, Wenjun Gao, Wen-Xuan Yu, Wentao Zhang, X. Q. Li,
+Xiangyu Jin, Xianzu Wang, Xiaoling Bi, Xiaodong Liu, Xiaohan Wang, Xi-Cheng Shen,
+Xiaokang Chen, Xiaokang Zhang, Xiaosha Chen, Xiaotao Nie, Xiaowen Sun, Xiaoxiang
+Wang, Xin Cheng, Xin Liu, Xin Xie, Xingchao Liu, Xingkai Yu, Xinnan Song, Xinxia
+Shan, Xinyi Zhou, Xinyu Yang, Xinyuan Li, Xuecheng Su, Xuheng Lin, Y. K. Li, Y. Q.
+Wang, Y. X. Wei, Y. X. Zhu, Yang Zhang, Yanhong Xu, Yanping Huang, Yao Li, Yao Zhao,
+Yaofeng Sun, Yao Li, Yaohui Wang, Yi Yu, Yi Zheng, Yichao Zhang, Yifan Shi, Yi Xiong,
+Ying He, Ying Tang, Yishi Piao, Yisong Wang, Yixuan Tan, Yi-Bing Ma, Yiyuan Liu,
+Yongqiang Guo, Yu Wu, Yuan Ou, Yuchen Zhu, Yuduan Wang, Yue Gong, Yuheng Zou,
+Yujia He, Yukun Zha, Yunfan Xiong, Yunxiang Ma, Yuting Yan, Yu-Wei Luo, Yu mei
+You, Yuxuan Liu, Yuyang Zhou, Z. F. Wu, Zehui Ren, Zehui Ren, Zhangli Sha, Zhe Fu,
+Zhean Xu, Zhen Huang, Zhen Zhang, Zhenda Xie, Zhen guo Zhang, Zhewen Hao, Zhibin
+Gou, Zhicheng Ma, Zhigang Yan, Zhihong Shao, Zhipeng Xu, Zhiyu Wu, Zhongyu Zhang,
+Zhuoshu Li, Zihui Gu, Zijia Zhu, Zijun Liu, Zi-An Li, Ziwei Xie, Ziyang Song, Ziyi Gao,
+and Zizheng Pan. Deepseek-v3 technical report. ArXiv, abs/2412.19437, 2024. URL
+https://api.semanticscholar.org/CorpusID:275118643.
+[14] DeepSeek-AI, Qihao Zhu, Daya Guo, Zhihong Shao, Dejian Yang, Peiyi Wang, Runxin Xu,
+Y. Wu, Yukun Li, Huazuo Gao, Shirong Ma, Wangding Zeng, Xiao Bi, Zihui Gu, Hanwei
+Xu, Damai Dai, Kai Dong, Liyue Zhang, Yishi Piao, Zhibin Gou, Zhenda Xie, Zhewen
+Hao, Bing-Li Wang, Jun-Mei Song, Deli Chen, Xin Xie, Kang Guan, Yu mei You, Aixin
+Liu, Qiushi Du, Wenjun Gao, Xuan Lu, Qinyu Chen, Yaohui Wang, Chengqi Deng, Jiashi
+Li, Chenggang Zhao, Chong Ruan, Fuli Luo, and Wenfeng Liang. Deepseek-coder-v2:
+Breaking the barrier of closed-source models in code intelligence.ArXiv, abs/2406.11931,
+2024. URL https://api.semanticscholar.org/CorpusID:270562723.
+[15] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle,
+Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, Anirudh Goyal, An-
+thony S. Hartshorn, Aobo Yang, Archi Mitra, Archie Sravankumar, Artem Korenev, Arthur
+Hinsvark, Arun Rao, Aston Zhang, Aurélien Rodriguez, Austen Gregerson, Ava Spataru,
+Bap tiste Roziere, Bethany Biron, Binh Tang, Bobbie Chern, Charlotte Caucheteux, Chaya
+Nayak, Chloe Bi, Chris Marra, Chris McConnell, Christian Keller, Christophe Touret,
+Chunyang Wu, Corinne Wong, Cristian Cantón Ferrer, Cyrus Nikolaidis, Damien Allon-
+sius, Daniel Song, Danielle Pintz, Danny Livshits, David Esiobu, Dhruv Choudhary, Dhruv
+Mahajan, Diego Garcia-Olano, Diego Perino, Dieuwke Hupkes, Egor Lakomkin, Ehab A.
+AlBadawy, Elina Lobanova, Emily Dinan, Eric Michael Smith, Filip Radenovic, Frank
+Zhang, Gabriele Synnaeve, Gabrielle Lee, Georgia Lewis Anderson, Graeme Nail, Grégoire
+Mialon, Guanglong Pang, Guillem Cucurell, Hailey Nguyen, Hannah Korevaar, Hu Xu,
+Hugo Touvron, Iliyan Zarov, Imanol Arrieta Ibarra, Isabel M. Kloumann, Ishan Misra,
+10
+Ivan Evtimov, Jade Copet, Jaewon Lee, Jan Geffert, Jana Vranes, Jason Park, Jay Ma-
+hadeokar, Jeet Shah, Jelmer van der Linde, Jennifer Billock, Jenny Hong, Jenya Lee,
+Jeremy Fu, Jianfeng Chi, Jianyu Huang, Jiawen Liu, Jie Wang, Jiecao Yu, Joanna Bit-
+ton, Joe Spisak, Jongsoo Park, Joseph Rocca, Joshua Johnstun, Joshua Saxe, Ju-Qing Jia,
+Kalyan Vasuden Alwala, K. Upasani, Kate Plawiak, Keqian Li, Ken-591 neth Heafield,
+Kevin Stone, Khalid El-Arini, Krithika Iyer, Kshitiz Malik, Kuen ley Chiu, Kunal Bhalla,
+Lauren Rantala-Yeary, Laurens van der Maaten, Lawrence Chen, Liang Tan, Liz Jenk-
+ins, Louis Martin, Lovish Madaan, Lubo Malo, Lukas Blecher, Lukas Landzaat, Luke
+de Oliveira, Madeline Muzzi, Mahesh Babu Pasupuleti, Mannat Singh, Manohar Paluri,
+Marcin Kardas, Mathew Oldham, Mathieu Rita, Maya Pavlova, Melissa Hall Melanie Kam-
+badur, Mike Lewis, Min Si, Mitesh Kumar Singh, Mona Hassan, Naman Goyal, Narjes
+Torabi, Nikolay Bashlykov, Nikolay Bogoychev, Niladri S. Chatterji, Olivier Duchenne,
+Onur cCelebi, Patrick Alrassy, Pengchuan Zhang, Pengwei Li, Petar Vasić, Peter Weng,
+Prajjwal Bhargava, Pratik Dubal, Praveen Krishnan, Punit Singh Koura, Puxin Xu, Qing
+He, Qingxiao Dong, Ragavan Srinivasan, Raj Ganapathy, Ramon Calderer, Ricardo Sil-
+veira Cabral, Robert Stojnic, Roberta Raileanu, Rohit Girdhar, Rohit Patel, Ro main
+Sauvestre, Ronnie Polidoro, Roshan Sumbaly, Ross Taylor, Ruan Silva, Rui Hou, Rui
+Wang, Saghar Hosseini, Sahana Chennabasappa, Sanjay Singh, Sean Bell, Seohyun Sonia
+Kim, Sergey Edunov, Shaoliang Nie, Sharan Narang, Sharath Chandra Raparthy, Sheng
+Shen, Shengye Wan, Shruti Bhosale, Shun Zhang, Simon Vandenhende, Soumya Batra,
+Spencer Whitman, Sten Sootla, Stephane Collot, Suchin Gururangan, Sydney Borodin-
+sky, Tamar Herman, Tara Fowler, Tarek Sheasha, Thomas Georgiou, Thomas Scialom,
+Tobias Speckbacher, Todor Mihaylov, Tong Xiao, Ujjwal Karn, Vedanuj Goswami, Vibhor
+Gupta, Vignesh Ramanathan, Viktor Kerkez, Vincent Gonguet, Virginie Do, Vish Vogeti,
+Vladan Petrovic, Weiwei Chu, Wenhan Xiong, Wenyin Fu, Whit ney Meers, Xavier Mar-
+tinet, Xiaodong Wang, Xiaoqing Ellen Tan, Xinfeng Xie, Xuchao Jia, Xuewei Wang, Yaelle
+Goldschlag, Yashesh Gaur, Yasmine Babaei, Yiqian Wen, Yiwen Song, Yuchen Zhang, Yue
+Li, Yuning Mao, Zacharie Delpierre Coudert, Zhengxu Yan, Zhengxing Chen, Zoe Pa-
+pakipos, Aaditya K. Singh, Aaron Grattafiori, Abha Jain, Adam Kelsey, Adam Shajnfeld,
+Adi Gangidi, Adolfo Victoria, Ahuva Goldstand, Ajay Menon, Ajay Sharma, Alex Boesen-
+berg, Alex Vaughan, Alexei Baevski, Allie Feinstein, Amanda Kallet, Amit Sangani, Anam
+Yunus, Andrei Lupu, Andres Alvarado, Andrew Caples, Andrew Gu, Andrew Ho, Andrew
+Poulton, Andrew Ryan, Ankit Ramchandani, Annie Franco, Aparajita Saraf, Arkabandhu
+Chowdhury, Ashley Gabriel, Ashwin Bharambe, Assaf Eisenman, Azadeh Yazdan, Beau
+James, Ben Maurer, Ben Leonhardi, Po-Yao (Bernie) Huang, Beth Loyd, Beto De Paola,
+Bhargavi Paranjape, Bing Liu, Bo Wu, Boyu Ni, Braden Hancock, Bram Wasti, Bran-
+don Spence, Brani Stojkovic, Brian Gamido, Britt Montalvo, Carl Parker, Carly Burton,
+Catalina Mejia, Changhan Wang, Changkyu Kim, Chao Zhou, Chester Hu, Ching-Hsiang
+Chu, Chris Cai, Chris Tindal, Christoph Feichtenhofer, Damon Civin, Dana Beaty, Daniel
+Kreymer, Shang-Wen Li, Danny Wyatt, David Adkins, David Xu, Davide Testuggine, Delia
+David, Devi Parikh, Diana Liskovich, Didem Foss, Dingkang Wang, Duc Le, Dustin Hol-
+land, Edward Dowling, Eissa Jamil, Elaine Montgomery, Eleonora Presani, Emily Hahn,
+Emily Wood, Erik Brinkman, Esteban Arcaute, Evan Dunbar, Evan Smothers, Fei Sun,
+Felix Kreuk, Feng Tian, Firat Ozgenel, Francesco Caggioni, Francisco Guzm’an, Frank J.
+Kanayet, Frank Seide, Gabriela Medina Florez, Gabriella Schwarz, Gada Badeer, Georgia
+Swee, Gil Halpern, Govind Thattai, Grant Herman, Grigory G. Sizov, Guangyi Zhang,
+Guna Lakshminarayanan, Hamid Shojanazeri, Han Zou, Hannah Wang, Han Zha, Haroun
+Habeeb, Harrison Rudolph, Helen Suk, Henry Aspegren, Hunter Goldman, Igor Moly-
+bog, Igor Tufanov, Irina-Elena Veliche, Itai Gat, Jake Weissman, James Geboski, James
+Kohli, Japhet Asher, Jean-Baptiste Gaya, Jeff Marcus, Jeff Tang, Jennifer Chan, Jenny
+Zhen, Jeremy Reizenstein, Jeremy Teboul, Jessica Zhong, Jian Jin, Jingyi Yang, Joe Cum-
+11
+mings, Jon Carvill, Jon Shepard, Jonathan McPhie, Jonathan Torres, Josh Ginsburg,
+Junjie Wang, Kaixing(Kai) Wu, U KamHou, Karan Saxena, Karthik Prasad, Kartikay
+Khandelwal, Katayoun Zand, Kathy Matosich, Kaushik Veeraraghavan, Kelly Michelena,
+Keqian Li, Kun Huang, Kunal Chawla, Kushal Lakhotia, Kyle Huang, Lailin Chen, Lak-
+shya Garg, A Lavender, Leandro Silva, Lee Bell, Lei Zhang, Liangpeng Guo, Licheng Yu,
+Liron Moshkovich, Luca Wehrstedt, Madian Khabsa, Manav Avalani, Manish Bhatt, Maria
+Tsimpoukelli, Martynas Mankus, Matan Hasson, Matthew Lennie, Matthias Reso, Maxim
+Groshev, Maxim Naumov, Maya Lathi, Meghan Keneally, Michael L. Seltzer, Michal
+Valko, Michelle Restrepo, Mihir Patel, Mik Vyatskov, Mikayel Samvelyan, Mike Clark,
+Mike Macey, Mike Wang, Miquel Jubert Hermoso, Mo Metanat, Mohammad Rastegari,
+Munish Bansal, Nandhini Santhanam, Natascha Parks, Natasha White, Navyata Bawa,
+Nayan Singhal, Nick Egebo, Nicolas Usunier, Nikolay Pavlovich Laptev, Ning Dong, Ning
+Zhang, Norman Cheng, Oleg Chernoguz, Olivia Hart, Omkar Salpekar, Ozlem Kalinli,
+Parkin Kent, Parth Parekh, Paul Saab, Pavan Balaji, Pedro Rittner, Philip Bontrager,
+Pierre Roux, Piotr Dollár, Polina Zvyagina, Prashant Ratanchandani, Pritish Yuvraj, Qian
+Liang, Rachad Alao, Rachel Rodriguez, Rafi Ayub, Raghotham Murthy, Raghu Nayani,
+Rahul Mitra, Raymond Li, Rebekkah Hogan, Robin Battey, Rocky Wang, Rohan Mah-
+eswari, Russ Howes, Ruty Rinott, Sai Jayesh Bondu, Samyak Datta, Sara Chugh, Sara
+Hunt, Sargun Dhillon, Sasha Sidorov, Satadru Pan, Saurabh Verma, Seiji Yamamoto,
+Sharadh Ramaswamy, Shaun Lindsay, Sheng Feng, Shenghao Lin, Shengxin Cindy Zha,
+Shiva Shankar, Shuqiang Zhang, Sinong Wang, Sneha Agarwal, Soji Sajuyigbe, Soumith
+Chintala, Stephanie Max, Stephen Chen, Steve Kehoe, Steve Satterfield, Sudarshan Govin-
+daprasad, Sumit Gupta, Sung-Bae Cho, Sunny Virk, Suraj Subramanian, Sy Choudhury,
+Sydney Goldman, Tal Remez, Tamar Glaser, Tamara Best, Thilo Kohler, Thomas Robin-
+son, Tianhe Li, Tianjun Zhang, Tim Matthews, Timothy Chou, Tzook Shaked, Varun
+Vontimitta, Victoria Ajayi, Victoria Montanez, Vijai Mohan, Vinay Satish Kumar, Vishal
+Mangla, Vlad Ionescu, Vlad Andrei Poenaru, Vlad T. Mihailescu, Vladimir Ivanov, Wei Li,
+Wenchen Wang, Wenwen Jiang, Wes Bouaziz, Will Constable, Xia Tang, Xiaofang Wang,
+Xiaojian Wu, Xiaolan Wang, Xide Xia, Xilun Wu, Xinbo Gao, Yanjun Chen, Ye Hu, Ye Jia,
+Ye Qi, Yenda Li, Yilin Zhang, Ying Zhang, Yossi Adi, Youngjin Nam, Yu Wang, Yuchen
+Hao, Yundi Qian, Yuzi He, Zach Rait, Zachary DeVito, Zef Rosnbrick, Zhaoduo Wen,
+Zhenyu Yang, and Zhiwei Zhao. The llama 3 herd of models.ArXiv, abs/2407.21783, 2024.
+URL https://api.semanticscholar.org/CorpusID:271571434.
+[16] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle,
+Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, et al. The llama 3
+herd of models. arXiv preprint arXiv:2407.21783 , 2024.
+[17] Albert Gu and Tri Dao. Mamba: Linear-time sequence modeling with selective state spaces.
+arXiv preprint arXiv:2312.00752 , 2023.
+[18] Ishaan Gulrajani and Tatsunori B Hashimoto. Likelihood-based diffusion language models.
+Advances in Neural Information Processing Systems , 36, 2024.
+[19] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models.
+Advances in neural information processing systems , 33:6840–6851, 2020.
+[20] Binyuan Hui, Jian Yang, Zeyu Cui, Jiaxi Yang, Dayiheng Liu, Lei Zhang, Tianyu Liu,
+Jiajun Zhang, Bowen Yu, Kai Dang, An Yang, Rui Men, Fei Huang, Shanghaoran Quan,
+Xingzhang Ren, Xuancheng Ren, Jingren Zhou, and Junyang Lin. Qwen2.5-coder tech-
+nical report. ArXiv, abs/2409.12186, 2024. URL https://api.semanticscholar.org/
+CorpusID:272707390.
+12
+[21] OpenAI Aaron Hurst, Adam Lerer, Adam P. Goucher, Adam Perelman, Aditya Ramesh,
+Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, Aleksander Mkadry,
+Alex Baker-Whitcomb, Alex Beutel, Alex Borzunov, Alex Carney, Alex Chow, Alexan-
+der Kirillov, Alex Nichol, Alex Paino, Alex Renzin, Alexandre Passos, Alexander Kir-
+illov, Alexi Christakis, Alexis Conneau, Ali Kamali, Allan Jabri, Allison Moyer, Allison
+Tam, Amadou Crookes, Amin Tootoochian, Amin Tootoonchian, Ananya Kumar, Andrea
+Vallone, Andrej Karpathy, Andrew Braunstein, Andrew Cann, Andrew Codispoti, An-
+drew Galu, Andrew Kondrich, Andrew Tulloch, Andrey Mishchenko, Angela Baek, Angela
+Jiang, Antoine Pelisse, Antonia Woodford, Anuj Gosalia, Arka Dhar, Ashley Pantuliano,
+Avi Nayak, Avital Oliver, Barret Zoph, B. Ghorbani, Ben Leimberger, Ben Rossen, Ben-
+jamin Sokolowsky, Ben Wang, Benjamin Zweig, Beth Hoover, Blake Samic, Bob McGrew,
+Bobby Spero, Bogo Giertler, Bowen Cheng, Brad Lightcap, Brandon Walkin, Brendan
+Quinn, Brian Guarraci, Brian Hsu, Bright Kellogg, Brydon Eastman, Camillo Lugaresi,
+Carroll L. Wainwright, Cary Bassin, Cary Hudson, Casey Chu, Chad Nelson, Chak Li,
+Chan Jun Shern, Channing Conger, Charlotte Barette, Chelsea Voss, Chen Ding, Cheng
+Lu, Chong Zhang, Chris Beaumont, Chris Hallacy, Chris Koch, Christian Gibson, Christina
+Kim, Christine Choi, Christine McLeavey, Chris Hesse, Claudia Fischer, Clemens Winter,
+Coley Czarnecki, Colin Jarvis, Colin Wei, Constantin Koumouzelis, Dane Sherburn, Daniel
+Kappler, Daniel Levin, Daniel Levy, David Carr, David Farhi, David Mély, David Robin-
+son, David Sasaki, Denny Jin, Dev Valladares, Dimitris Tsipras, Doug Li, Phong Duc
+Nguyen, Duncan Findlay, Edede Oiwoh, Edmund Wong, Ehsan Asdar, Elizabeth Proehl,
+Elizabeth Yang, Eric Antonow, Eric Kramer, Eric Peterson, Eric Sigler, Eric Wallace,
+Eugene Brevdo, Evan Mays, Farzad Khorasani, Felipe Petroski Such, Filippo Raso, Fran-
+cis Zhang, Fred von Lohmann, Freddie Sulit, Gabriel Goh, Gene Oden, Geoff Salmon,
+Giulio Starace, Greg Brockman, Hadi Salman, Hai-Biao Bao, Haitang Hu, Hannah Wong,
+Haoyu Wang, Heather Schmidt, Heather Whitney, Heewoo Jun, Hendrik Kirchner, Hen-
+rique Pondé de Oliveira Pinto, Hongyu Ren, Huiwen Chang, Hyung Won Chung, Ian D.
+Kivlichan, Ian O’Connell, Ian Osband, Ian Silber, Ian Sohl, İbrahim Cihangir Okuyucu,
+Ikai Lan, Ilya Kostrikov, Ilya Sutskever, Ingmar Kanitscheider, Ishaan Gulrajani, Jacob
+Coxon, Jacob Menick, Jakub W. Pachocki, James Aung, James Betker, James Crooks,
+James Lennon, Jamie Ryan Kiros, Jan Leike, Jane Park, Jason Kwon, Jason Phang, Ja-
+son Teplitz, Jason Wei, Jason Wolfe, Jay Chen, Jeff Harris, Jenia Varavva, Jessica Gan
+Lee, Jessica Shieh, Ji Lin, Jiahui Yu, Jiayi Weng, Jie Tang, Jieqi Yu, Joanne Jang,
+Joaquin Quiñonero Candela, Joe Beutler, Joe Landers, Joel Parish, Jo hannes Heidecke,
+John Schulman, Jonathan Lachman, Jonathan McKay, Jonathan Uesato, Jonathan Ward,
+Jong Wook Kim, Joost Huizinga, Jordan Sitkin, Jos Kraaijeveld, Joshua Gross, Josh Ka-
+plan, Josh Snyder, Josh Achiam, Joy Jiao, Joyce Lee, Juntang Zhuang, Justyn Harriman,
+Kai Fricke, Kai Hayashi, Karan Singhal, Katy Shi, Kavin Karthik, Kayla Wood, Kendra
+Rimbach, Kenny Hsu, Kenny Nguyen, Keren Gu-Lemberg, Kevin Button, Kevin Liu, Kiel
+Howe, Krithika Muthukumar, Kyle Luther, Lama Ahmad, Larry Kai, Lauren Itow, Lau-
+ren Workman, Leher Pathak, Leo Chen, Li Jing, Lia Guy, Liam Fedus, Liang Zhou, Lien
+Mamitsuka, Lilian Weng, Lindsay McCallum, Lindsey Held, Ouyang Long, Louis Feuvrier,
+Lu Zhang, Lukasz Kondraciuk, Lukasz Kaiser, Luke Hewitt, Luke Metz, Lyric Doshi,
+Mada Aflak, Maddie Simens, Made laine Boyd, Madeleine Thompson, Marat Dukhan,
+Mark Chen, Mark Gray, Mark Hudnall, Marvin Zhang, Marwan Aljubeh, Ma teusz Litwin,
+Matthew Zeng, Max Johnson, Maya Shetty, Mayank Gupta, Meghan Shah, Mehmet Ali
+Yatbaz, Mengxue Yang, Mengchao Zhong, Mia Glaese, Mianna Chen, Michael Janner,
+Michael Lampe, Michael Petrov, Michael Wu, Michele Wang, Michelle Fradin, Michelle
+Pokrass, Miguel Castro, Miguel Castro, Mikhail Pavlov, Miles Brundage, Miles Wang,
+Mina Khan, Mira Murati, Mo Bavarian, Molly Lin, Murat Yesildal, Nacho Soto, Na-
+talia Gimelshein, Natalie Cone, Natalie Staudacher, Natalie Summers, Natan LaFontaine,
+13
+Neil Chowdhury, Nick Ryder, Nickolas Stathas, Nick Turley, Nikolas A. Tezak, Niko Fe-
+lix, Nithanth Kudige, Nitish Shirish Keskar, Noah Deutsch, Noel Bundick, Nora Puckett,
+Ofir Nachum, Ola Okelola, Oleg Boiko, Oleg Murk, Oliver Jaffe, Olivia Watkins, Olivier
+Godement, Owen Campbell-Moore, Patrick Chao, Paul McMillan, Pavel Belov, Peng Su,
+Peter Bak, Peter Bakkum, Peter Deng, Peter Dolan, Peter Hoeschele, Peter Welinder, Phil
+Tillet, Philip Pronin, Phil Tillet, Prafulla Dhariwal, Qim ing Yuan, Rachel Dias, Rachel
+Lim, Rahul Arora, Rajan Troll, Randall Lin, Raphael Gontijo Lopes, Raul Puri, Reah Mi-
+yara, Reimar H. Leike, Renaud Gaubert, Reza Zamani, Ricky Wang, Rob Donnelly, Rob
+Honsby, Rocky Smith, Rohan Sahai, Rohit Ramchandani, Romain Huet, Rory Carmichael,
+Rowan Zellers, Roy Chen, Ruby Chen, Ruslan Ramilevich Nigmatullin, Ryan Cheu, Saachi
+Jain, Sam Altman, Sam Schoenholz, Sam Toizer, Samuel Miserendino, Sandhini Agar-
+wal, Sara Culver, Scott Ethersmith, Scott Gray, Sean Grove, Sean Metzger, Shamez Her-
+mani, Shantanu Jain, Shengjia Zhao, Sherwin Wu, Shino Jomoto, Shirong Wu, Shuaiqi
+Xia, Sonia Phene, Spencer Papay, Srinivas Narayanan, Steve Coffey, Steve Lee, Stewart
+Hall, Suchir Balaji, Tal Broda, Tal Stramer, Tao Xu, Tarun Gogineni, Taya Christianson,
+Ted Sanders, Tejal A. Patwardhan, Thomas Cunninghman, Thomas Degry, Thomas Dim-
+son, Thomas Raoux, Thomas Shadwell, Tianhao Zheng, Todd Underwood, Todor Markov,
+Toki Sherbakov, Tom Rubin, Tom Stasi, Tomer Kaftan, Tristan Heywood, Troy Peterson,
+Tyce Walters, Tyna Eloundou, Valerie Qi, Veit Moeller, Vinnie Monaco, Vishal Kuo, Vlad
+Fomenko, Wayne Chang, Weiyi Zheng, Wenda Zhou, Wesam Manassra, Will Sheu, Woj-
+ciech Zaremba, Yash Patil, Yilei Qian, Yongjik Kim, Youlong Cheng, Yu Zhang, Yuchen
+He, Yuchen Zhang, Yujia Jin, Yunxing Dai, and Yury Malkov. Gpt-4o system card.ArXiv,
+abs/2410.21276, 2024. URL https://api.semanticscholar.org/CorpusID:273662196.
+[22] Amazon Artificial General Intelligence. The amazon nova fam-
+ily of models: Technical report and model card. Amazon Techni-
+cal Reports , 2024. URL https://www.amazon.science/publications/
+the-amazon-nova-family-of-models-technical-report-and-model-card .
+[23] Daniel Israel, Aditya Grover, and Guy Van den Broeck. Enabling autoregressive models to
+fill in masked tokens.arXiv preprint arXiv:2502.06901 , 2025.
+[24] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang,
+Armando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and con-
+tamination free evaluation of large language models for code.ArXiv, abs/2403.07974, 2024.
+URL https://api.semanticscholar.org/CorpusID:268379413.
+[25] Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Liang, and Tatsunori B Hashimoto.
+Diffusion-lm improves controllable text generation.Advances in Neural Information Pro-
+cessing Systems, 35:4328–4343, 2022.
+[26] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang
+Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report.
+arXiv preprint arXiv:2412.19437 , 2024.
+[27] JiaweiLiu, ChunXia, YuyaoWang, andLingmingZhang. Isyourcodegeneratedbychatgpt
+really correct? rigorous evaluation of large language models for code generation.ArXiv,
+abs/2305.01210, 2023. URL https://api.semanticscholar.org/CorpusID:258437095.
+[28] Aaron Lou, Chenlin Meng, and Stefano Ermon. Discrete diffusion language modeling by
+estimating the ratios of the data distribution.arXiv preprint arXiv:2310.16834 , 2023.
+[29] Mistral AI. Mistral small 3, January 2025. URL https://mistral.ai/news/
+mistral-small-3. Accessed: 2025-03-18.
+14
+[30] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin,
+Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language mod-
+els to follow instructions with human feedback.Advances in neural information processing
+systems, 35:27730–27744, 2022.
+[31] William Peebles and Saining Xie. Scalable diffusion models with transformers. In Pro-
+ceedings of the IEEE/CVF International Conference on Computer Vision , pp. 4195–4205,
+2023.
+[32] Bo Peng, Eric Alcaide, Quentin Anthony, Alon Albalak, Samuel Arcadinho, Stella Bider-
+man, Huanqi Cao, Xin Cheng, Michael Chung, Matteo Grella, et al. Rwkv: Reinventing
+rnns for the transformer era.arXiv preprint arXiv:2305.13048 , 2023.
+[33] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon,
+and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward
+model. Advances in Neural Information Processing Systems , 36:53728–53741, 2023.
+[34] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn Om-
+mer. High-resolution image synthesis with latent diffusion models. InProceedings of the
+IEEE/CVF conference on computer vision and pattern recognition , pp. 10684–10695, 2022.
+[35] Subham Sekhar Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin,
+Justin T Chiu, Alexander Rush, and Volodymyr Kuleshov. Simple and effective masked
+diffusion language models. arXiv preprint arXiv:2406.07524 , 2024.
+[36] Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep un-
+supervised learning using nonequilibrium thermodynamics. InInternational conference on
+machine learning, pp. 2256–2265. PMLR, 2015.
+[37] Yang Song and Stefano Ermon. Generative modeling by estimating gradients of the data
+distribution. Advances in neural information processing systems , 32, 2019.
+[38] Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui Wu, Jean-Baptiste Alayrac, Ji-
+ahui Yu, Radu Soricut, Johan Schalkwyk, Andrew M Dai, Anja Hauth, et al. Gemini: a
+family of highly capable multimodal models.arXiv preprint arXiv:2312.11805 , 2023.
+[39] Mistral AI team. Codestral 25.01, 2025. URL https://mistral.ai/news/
+codestral-2501. Accessed: 2025-03-18.
+[40] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N
+Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need.Advances in neural
+information processing systems, 30, 2017.
+[41] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le,
+Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models.
+Advances in neural information processing systems , 35:24824–24837, 2022.
+[42] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan
+Li, Dayiheng Liu, Fei Huang, Haoran Wei, et al. Qwen2. 5 technical report.arXiv preprint
+arXiv:2412.15115, 2024.
+15

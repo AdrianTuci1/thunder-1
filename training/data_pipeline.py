@@ -28,6 +28,11 @@ class ThunderDataPipeline:
             
         ratios = THUNDER_CONFIG["pipeline"].get("dataset_ratios", [1.0 / len(dataset_names)] * len(dataset_names))
         
+        # Safety check: ratios must match dataset_names length for interleave_datasets
+        if len(ratios) != len(dataset_names):
+            print(f"⚠️ Thunder: Warning! dataset_ratios length ({len(ratios)}) does not match dataset_names ({len(dataset_names)}). Defaulting to uniform ratios.")
+            ratios = [1.0 / len(dataset_names)] * len(dataset_names)
+
         loaded_datasets = []
         for name in dataset_names:
             print(f"⚡ Thunder: Loading dataset {name}...")
@@ -131,6 +136,15 @@ class ThunderDataPipeline:
                 text = f"### User:\n{example['problem']}\n\n### Assistant:\n{example['solution']}"
                 return {"text": text}
             return dataset.map(format_math, remove_columns=dataset.column_names)
+        
+        elif "opus" in name.lower() or "nohurry" in name.lower():
+            # Opus Reasoning dataset with: id, problem, thinking, solution, difficulty, category, etc.
+            def format_opus(example):
+                text = f"### User:\n{example['problem']}\n\n"
+                text += f"### Assistant Thinking:\n{example['thinking']}\n\n"
+                text += f"### Assistant Solution:\n{example['solution']}"
+                return {"text": text}
+            return dataset.map(format_opus, remove_columns=dataset.column_names)
         
         return dataset
 

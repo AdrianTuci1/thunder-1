@@ -15,7 +15,7 @@ class ThunderModelLoader:
         self.model = None
         self.tokenizer = None
 
-    def load_model(self, load_in_4bit=True):
+    def load_model(self, load_in_4bit=True, inference_mode=True):
         """
         Loads the model and tokenizer with 4-bit quantization and BF16 support.
         """
@@ -35,10 +35,11 @@ class ThunderModelLoader:
         # 3. Adapt model for PrefixLM Diffusion
         from core.diffusion_model import PrefixLMDiffusionAdapter
         adapter = PrefixLMDiffusionAdapter(self.model)
-        self.model = adapter.adapt_for_diffusion()
+        self.model = adapter.adapt_for_diffusion(checkpoint_path=model_to_load)
         
-        # Enable faster inference 
-        FastLanguageModel.for_inference(self.model)
+        if inference_mode:
+            # Enable faster inference 
+            FastLanguageModel.for_inference(self.model)
         
         return self.model, self.tokenizer
 

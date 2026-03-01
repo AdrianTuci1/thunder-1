@@ -6,7 +6,7 @@ class ThunderRouter:
     """
     
     def __init__(self, internal_threshold=None):
-        self.internal_threshold = internal_threshold or THUNDER_CONFIG["logic"]["internal_threshold"]
+        self.internal_threshold = internal_threshold or THUNDER_CONFIG["logic"].get("internal_threshold", 0.5)
 
     def route_query(self, query, forced_mode=None):
         """

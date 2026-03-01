@@ -75,11 +75,12 @@ class PrefixLMDiffusionAdapter:
         self.model.timestep_embedder = TimestepEmbedder(hidden_size).to(self.model.device).to(self.model.dtype)
         
         # x0 parametrization: we predict the clean x0 directly. 
-        # A simple linear layer maps the final hidden state to the x0 estimate.
-        # It's initialized to near-identity or zero-bias if possible.
+        # INITIALIZATION: Very important. We initialize to a small identity-like transform
+        # so that the model starts by outputting something close to its inputs.
         self.model.x0_head = nn.Linear(hidden_size, hidden_size).to(self.model.device).to(self.model.dtype)
-        # Initialize x0_head weights to be compatible with standardized N(0, 1) space
-        nn.init.normal_(self.model.x0_head.weight, mean=0.0, std=0.1)
+        nn.init.eye_(self.model.x0_head.weight)
+        # Add a bit of noise to break symmetry but keep it stable
+        self.model.x0_head.weight.data += torch.randn_like(self.model.x0_head.weight.data) * 0.01
         nn.init.zeros_(self.model.x0_head.bias)
 
         # Try to load existing weights if available

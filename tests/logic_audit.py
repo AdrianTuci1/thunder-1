@@ -24,7 +24,7 @@ def run_logic_audit():
         {"q": "What is 2+2?", "mode": None, "desc": "Simple query (Auto)"},
         {"q": "Analyze the geopolitical impact of fusion energy.", "mode": None, "desc": "Complex query (Auto)"},
         {"q": "Fast reply please.", "mode": "instant", "desc": "Forced Instant"},
-        {"q": "Deep dive into Mamba architecture.", "mode": "thinking", "desc": "Forced Thinking"},
+        {"q": "Deep dive into Cloud architecture.", "mode": "thinking", "desc": "Forced Thinking"},
     ]
     
     for case in test_cases:

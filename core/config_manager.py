@@ -37,11 +37,11 @@ THUNDER_CONFIG = {
         "lora_alpha": 256,       # Scaling factor (alpha)
         
         # Optimization
-        "learning_rate": 8e-5,   
-        "batch_size": 2,         # Per-device training batch size
-        "grad_accum": 8,         # Gradient accumulation steps
-        "max_steps": 1500,       
-        "warmup_steps": 50,      
+        "learning_rate": 3.0e-5, # Lowered for stability in Diffusion Fine-tuning   
+        "batch_size": 4,         # Reduced to 4 to fix OOM on 24GB VRAM
+        "grad_accum": 8,         # Increased to 8 to keep Effective Batch Size at 32
+        "max_steps": 55000,       
+        "warmup_steps": 1000,      
         "optim": "adamw_8bit",   
         "weight_decay": 0.01,    
         "lr_scheduler": "cosine",
@@ -64,9 +64,10 @@ THUNDER_CONFIG = {
             "nickrosh/Evol-Instruct-Code-80k-v1",
             "qwedsacf/competition_math",
             "nomic-ai/gpt4all-j-prompt-generations",
-            "zai-org/LongAlign-10k"
+            "zai-org/LongAlign-10k",
+            "nohurry/Opus-4.6-Reasoning-3000x-filtered"
         ],
-        "dataset_ratios": [0.35, 0.15, 0.10, 0.20, 0.20], # Rebalanced for text logic
+        "dataset_ratios": [0.15, 0.15, 0.10, 0.20, 0.20, 0.20], # Rebalanced for text logic
         "num_proc": 4,           
         "packing": True,         # Enables Constant Length Packing
     },
@@ -86,6 +87,7 @@ THUNDER_CONFIG = {
         "default_steps": 25,
         "min_steps": 5,
         "max_steps": 100,
+        "internal_threshold": 0.5,
     },
     
     # ----------------------------------------------------------------------
