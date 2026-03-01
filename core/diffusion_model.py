@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from unsloth import FastLanguageModel
+import os
 
 class TimestepEmbedder(nn.Module):
     """
@@ -67,35 +68,32 @@ class PrefixLMDiffusionAdapter:
     def adapt_for_diffusion(self, checkpoint_path=None):
         """
         Incorporate diffusion-specific layers and settings into the backbone.
+        Optimized for LLaDA/Llama-based architectures.
         """
-        print("⚡ Thunder PrefixLM: Adapting architecture for Diffusion (x0-parametrization)...")
+        print(f"⚡ Thunder PrefixLM: Adapting architecture for Diffusion (x0-parametrization)...")
         hidden_size = self.model.config.hidden_size
         
-        # We need a timestep embedder
+        # 1. Timestep Embedder
         self.model.timestep_embedder = TimestepEmbedder(hidden_size).to(self.model.device).to(self.model.dtype)
         
-        # x0 parametrization: we predict the clean x0 directly. 
-        # INITIALIZATION: Very important. We initialize to a small identity-like transform
-        # so that the model starts by outputting something close to its inputs.
+        # 2. x0 head (predict cleaner latents)
+        # Using a specialized initialization for faster convergence
         self.model.x0_head = nn.Linear(hidden_size, hidden_size).to(self.model.device).to(self.model.dtype)
         nn.init.eye_(self.model.x0_head.weight)
-        # Add a bit of noise to break symmetry but keep it stable
-        self.model.x0_head.weight.data += torch.randn_like(self.model.x0_head.weight.data) * 0.01
+        self.model.x0_head.weight.data += torch.randn_like(self.model.x0_head.weight.data) * 0.005
         nn.init.zeros_(self.model.x0_head.bias)
 
-        # Try to load existing weights if available
-        if checkpoint_path:
+        # 3. Load weights if resuming/checkpointing
+        if checkpoint_path and os.path.isdir(checkpoint_path):
             self.load_diffusion_layers(checkpoint_path)
         
+        # 4. Attention & Flow Control
+        # LLaDA is bidirectional by default, but we ensure it for all backbones
         self.enable_bidirectional_attention()
         self.replace_forward_for_diffusion()
         
-        # EXPERIMENTAL: End-to-End Embedding Training (Paper Section 4.1)
-        # Unfreezing the embedding matrix so the model can learn to space out
-        # mathematical tokens from natural language tokens in the continuous domain.
+        # 5. Embedding Training
         self.model.get_input_embeddings().weight.requires_grad = True
-        
-        # Ensure the model remembers it's adapted
         self.model.is_thunder_adapted = True
         
         return self.model
@@ -165,46 +163,66 @@ class PrefixLMDiffusionAdapter:
             inputs_embeds = x_t + t_embed.unsqueeze(1)
             
             # 2. Self-Conditioning Trick (Chen et al. 2022)
-            # If we have a previous estimate of x0, we provide it as additional guidance.
-            # In Diffusion-LM, this can be added or concatenated. We'll add it.
             if self_cond is not None:
                 inputs_embeds = inputs_embeds + self_cond
             
             # 3. Backbone Forward Pass
-            # We bypass the Embedding layer and go directly into the Transformer blocks
-            # Llama models usually have `model.model` as the core Transformer, 
-            # and `model.lm_head` as the vocabulary projector.
-            # Depending on if it's PeftModel or LlamaForCausalLM, the path might be slightly different.
-            
-            # We pass inputs_embeds directly and get the hidden states.
-            # We need to find the core Transformer module regardless of PEFT wrappers.
-            if hasattr(self_model, "base_model") and hasattr(self_model.base_model, "model") and hasattr(self_model.base_model.model, "model"):
-                transformer = self_model.base_model.model.model
-            elif hasattr(self_model, "model"):
-                # Usually it's model.model for LlamaForCausalLM, but 
-                # actually LlamaForCausalLM has `.model` which IS the LlamaModel!
-                if isinstance(self_model.model, torch.nn.Module) and hasattr(self_model.model, "layers"):
-                    transformer = self_model.model
-                elif hasattr(self_model.model, "model"):
-                    transformer = self_model.model.model
-                else:
-                    transformer = self_model.model
-            else:
-                transformer = self_model
+            # We need the module that accepts embeddings and contains 'layers'.
+            def get_transformer_outputs(m, embeds, mask, **kwargs):
+                # LLaDA and some other models might require 'input_ids' or use 'input_embeddings'
+                import inspect
+                sig = inspect.signature(m.forward)
+                
+                call_args = {"attention_mask": mask, **kwargs}
+                
+                # Determine embedding parameter name
+                emb_param = "input_embeddings" if "input_embeddings" in sig.parameters else "inputs_embeds"
+                call_args[emb_param] = embeds
+                
+                # Some models (like LLaDA) have input_ids as a mandatory first arg or keyword
+                if "input_ids" in sig.parameters:
+                    call_args["input_ids"] = None
+                    
+                return m(**call_args)
 
-            outputs = transformer(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                output_hidden_states=False,
+            def find_core_transformer(m):
+                # For GSAI-ML LLaDA, model.model is the LLaDAModel
+                if hasattr(m, "layers") and not isinstance(m, torch.nn.ModuleDict): return m
+                if hasattr(m, "model") and hasattr(m.model, "layers"): return m.model
+                return m
+
+            if hasattr(self_model, "base_model"):
+                base = self_model.base_model
+                inner = base.model if hasattr(base, "model") else base
+                transformer = find_core_transformer(inner)
+            else:
+                transformer = find_core_transformer(self_model)
+
+            outputs = get_transformer_outputs(
+                transformer,
+                embeds=inputs_embeds,
+                mask=attention_mask,
+                output_hidden_states=True, # We need the hidden states
                 use_cache=False,
                 **kwargs
             )
             
-            # The last hidden state
-            last_hidden_state = outputs.last_hidden_state # [batch, seq_len, hidden_size]
-            
+            # Extract last hidden state
+            if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+                last_hidden_state = outputs.last_hidden_state
+            elif hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
+                # hidden_states is a tuple (embeddings, layer_1, ..., layer_n)
+                last_hidden_state = outputs.hidden_states[-1]
+            elif isinstance(outputs, (tuple, list)):
+                last_hidden_state = outputs[0]
+            else:
+                # Last resort: if it's a dict-like or standard output
+                last_hidden_state = outputs.get("last_hidden_state", outputs.get("hidden_states", [None])[-1])
+
+            if last_hidden_state is None:
+                raise ValueError(f"Could not extract hidden states from model output type: {type(outputs)}")
+                
             # 4. Predict x0
-            # Parametrization: the model outputs its best guess for the clean x0
             x0_pred = self_model.x0_head(last_hidden_state)
             
             return x0_pred

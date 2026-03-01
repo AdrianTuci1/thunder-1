@@ -10,27 +10,45 @@ class ThunderModelLoader:
     """
     
     def __init__(self, model_name=None):
-        self.model_name = model_name or "unsloth/Llama-3.2-3B-Instruct"
+        self.model_name = model_name # Store the model_name passed to __init__
         self.max_seq_length = THUNDER_CONFIG["engine"]["max_seq_len"]
         self.model = None
         self.tokenizer = None
 
     def load_model(self, load_in_4bit=True, inference_mode=True):
         """
-        Loads the model and tokenizer with 4-bit quantization and BF16 support.
+        Loads the model and tokenizer.
         """
-        # Prioritize model_path from config if specified
-        model_to_load = THUNDER_CONFIG["engine"].get("model_path") or self.model_name
+        import torch
+        # Priority: constructor arg > config > default
+        model_to_load = self.model_name or THUNDER_CONFIG["engine"].get("model_path")
         
-        print(f"⚡ Thunder: Loading model {model_to_load} with {self.max_seq_length} context...")
+        print(f"⚡ Thunder: Loading model {model_to_load}...")
         
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_to_load,
-            max_seq_length=self.max_seq_length,
-            load_in_4bit=load_in_4bit,
-            dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
-            device_map="auto"
-        )
+        # Check if it's a LLaDA model to decide loading strategy
+        is_llada = "LLaDA" in model_to_load
+        
+        if is_llada:
+            # LLaDA might need standard transformers if unsloth hasn't patched it yet
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(model_to_load)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_to_load,
+                trust_remote_code=True,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
+                load_in_4bit=load_in_4bit,
+                device_map="auto"
+            )
+        else:
+            # Fallback for Llama/other models
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                model_name=model_to_load,
+                max_seq_length=self.max_seq_length,
+                load_in_4bit=load_in_4bit,
+                dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
+                device_map="auto"
+            )
         
         # 3. Adapt model for PrefixLM Diffusion
         from core.diffusion_model import PrefixLMDiffusionAdapter

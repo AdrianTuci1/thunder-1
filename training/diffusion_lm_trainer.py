@@ -20,7 +20,7 @@ print("⚡ Thunder Trace: All modules imported.", flush=True)
 
 class DiffusionLMTrainer:
     """
-    Custom training loop for continuous Diffusion-LM with Llama-3.2 (PrefixLM).
+    Custom training loop for continuous Diffusion-LM with LLaDA-8B (Bidirectional).
     We do NOT use SFTTrainer because we need tight control over:
     1. The continuous embedding bridge.
     2. The diffusion timestep sampling.
@@ -284,8 +284,8 @@ class DiffusionLMTrainer:
 def run_training():
     print("⚡ Thunder Trace: Initializing run_training...")
     loader = ThunderModelLoader()
-    # Load base Llama 3.2 3B
-    print("⚡ Thunder Trace: Calling loader.load_model(inference_mode=False)...")
+    # Load LLaDA
+    print(f"⚡ Thunder Trace: Calling loader.load_model(inference_mode=False) for {loader.model_name}...")
     model, tokenizer = loader.load_model(load_in_4bit=THUNDER_CONFIG["hardware"]["load_in_4bit"], inference_mode=False)
     print("⚡ Thunder Trace: Model and tokenizer loaded.")
     
@@ -296,11 +296,13 @@ def run_training():
     # 2. Adapt the model for PrefixLM Diffusion
     adapter = PrefixLMDiffusionAdapter(model)
     
-    # Target all linear layers for profound capability shift (from causal to bidirectional)
+    # Target all linear layers for profound capability shift
     from peft import PeftModel
     if not isinstance(model, PeftModel):
-        print("⚡ Thunder PrefixLM: Applying new LoRA adapters...")
-        model = adapter.apply_lora(r=128, lora_alpha=256) 
+        print("⚡ Thunder PrefixLM: Applying new LoRA adapters to LLaDA...")
+        # LLaDA uses standard attention names
+        target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        model = adapter.apply_lora(r=128, lora_alpha=256, target_modules=target_modules) 
     else:
         print("⚡ Thunder PrefixLM: Model already has LoRA adapters. Skipping re-application.")
         

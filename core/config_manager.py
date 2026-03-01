@@ -8,8 +8,10 @@ THUNDER_CONFIG = {
     # 1. CORE ENGINE & HARDWARE
     # ----------------------------------------------------------------------
     "engine": {
-        "model_path": "unsloth/Llama-3.2-3B-Instruct",
-        "max_seq_len": 2048,
+        "model_path": "GSAI-ML/LLaDA-8B-Instruct",
+        "max_seq_len": 4096,
+        "use_quantization": True,
+        "trust_remote_code": True
     },
     
     "hardware": {
@@ -40,7 +42,7 @@ THUNDER_CONFIG = {
         "learning_rate": 3.0e-5, # Lowered for stability in Diffusion Fine-tuning   
         "batch_size": 4,         # Reduced to 4 to fix OOM on 24GB VRAM
         "grad_accum": 8,         # Increased to 8 to keep Effective Batch Size at 32
-        "max_steps": 55000,       
+        "max_steps": 2000,       
         "warmup_steps": 1000,      
         "optim": "adamw_8bit",   
         "weight_decay": 0.01,    
@@ -49,7 +51,7 @@ THUNDER_CONFIG = {
         
         # Output & State
         "output_dir": "./thunder_prefixlm_llama",
-        "save_steps": 200,       
+        "save_steps": 500,       
         "save_total_limit": 3,   
         "logging_steps": 1,      
         "seed": 3407,            

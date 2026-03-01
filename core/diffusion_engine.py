@@ -118,122 +118,80 @@ class PrefixLMDiffusionEngine:
 
     def generate(self, shape, embedding_matrix, steps=None, prompt_embeds=None, anchor_len=0, 
                  apply_clamping=True, guidance_scale=1.0, uncond_prompt_embeds=None, 
-                 return_trajectory=False, early_stopping_patience=3):
+                 return_trajectory=False, early_stopping_patience=3, threshold=0.05):
         """
-        Generation with Dynamic Decoding Steps (10 to 100) based on complexity.
-        embedding_matrix: EXPECTS RAW EMBEDDINGS
-        prompt_embeds: EXPECTS RAW EMBEDDINGS
+        Generation with Dynamic Decoding Steps and Speedy Mode (Token-Level Locking).
         """
-        # Dynamic Steps Logic (Paper Section C: Downsampling)
-        # We scale steps between 10 (simple) and 100 (complex) depending on the prompt length
-        max_dynamic_steps = 100
-        min_dynamic_steps = 10
+        # Dynamic Steps Logic
+        max_dynamic_steps = THUNDER_CONFIG["logic"].get("max_steps", 100)
+        min_dynamic_steps = THUNDER_CONFIG["logic"].get("min_steps", 10)
+        
         if steps is None:
-            # Heuristic: More context = harder diffusion problem, need more steps
-            complexity_factor = min(1.0, anchor_len / 512.0) # Assume 512 is "max" complexity for this heuristic
+            complexity_factor = min(1.0, anchor_len / 512.0)
             steps = int(min_dynamic_steps + (max_dynamic_steps - min_dynamic_steps) * complexity_factor)
             
-        print(f"⚡ Thunder PrefixLM: Generating (Dynamic Steps: {steps}, CFG: {guidance_scale}, EarlyStop: {early_stopping_patience}, Grounded: True)...")
+        print(f"⚡ Thunder Speedy Mode: Generating ({steps} steps, Threshold: {threshold}, Grounded: True)...")
 
         device = self.model.device
         dtype = self.model.dtype
         logit_scale = (shape[-1] ** 0.5) + 1e-6
+        batch_size, seq_len, _ = shape
         
-        # 1. Start with pure noise x_T (N(0, 1))
+        # 1. Initialize
         current_state = torch.randn(shape, device=device, dtype=dtype)
-        
-        # 2. Apply Prompt (already standardized in the script)
         if anchor_len > 0 and prompt_embeds is not None:
             current_state[:, :anchor_len, :] = prompt_embeds[:, :anchor_len, :].to(dtype)
 
+        # 2. Token-Level Locking State
+        locked_mask = torch.zeros((batch_size, seq_len), device=device, dtype=torch.bool)
+        locked_mask[:, :anchor_len] = True # Prompt is always "locked" (grounded)
+        
         trajectory = []
         final_tokens = None
-        
-        # Early stopping & Self-conditioning state
-        last_response_tokens = None
-        last_x0_pred = None # Zero initialized implicitly by None in forward usually, but let's be explicit
-        stable_count = 0
+        last_x0_pred = None
         
         for step_idx in range(steps):
-            # 1. Temperature & Logit Scale Annealing
-            # Diffusion needs more exploration early on.
-            # Start with high temperature (2.0) dropping to sharp (0.1)
+            # Annealing
             temp = 2.0 - (1.9 * (step_idx / steps))
-            
-            # Dynamic Logit Scale: Progressively increase from slightly scaled down to full sqrt(D) + epsilon
-            # This restricts premature hard-commitment.
             current_logit_scale = (logit_scale * 0.5) + (logit_scale * 0.5) * (step_idx / steps)
             
-            # 2. Iterative Clamping (Mercury 1 Adaptation)
-            # Apply clamping earlier in the intermediate steps (50% onwards) rather than just the final 20%
-            # This grounds the parallel generation and reduces accumulated rounding errors during coarse-to-fine refinement.
-            use_clamp = apply_clamping and (step_idx > int(steps * 0.5))
-            
-            new_state_clamped, current_token_ids, x0_pred_val, step_conf = self.process_single_step(
+            # Step execution
+            new_state, current_token_ids, x0_pred_val, step_conf = self.process_single_step(
                 x_t=current_state, 
                 step_idx=step_idx, 
                 total_steps=steps, 
                 embedding_matrix=embedding_matrix,
-                apply_clamping=True, # Forced for monitoring
+                apply_clamping=True,
                 guidance_scale=guidance_scale,
                 uncond_prompt_embeds=uncond_prompt_embeds,
                 logit_scale=current_logit_scale,
                 temperature=temp,
                 anchor_len=anchor_len,
                 self_cond=last_x0_pred,
-                clean_prompt_embeds=prompt_embeds # Grounding Fix
+                clean_prompt_embeds=prompt_embeds
             )
             
+            # Speedy Mode: Update ONLY unlocked tokens
+            # We use a bitmask to blend current_state and new_state
+            mask_expanded = locked_mask.unsqueeze(-1).to(dtype)
+            current_state = current_state * mask_expanded + new_state * (1 - mask_expanded)
+            
+            # Threshold Check for NEW locks
+            if last_x0_pred is not None and threshold > 0:
+                diff = torch.abs(x0_pred_val - last_x0_pred).mean(dim=-1)
+                newly_locked = (diff < threshold) & (~locked_mask)
+                locked_mask = locked_mask | newly_locked
+            
             last_x0_pred = x0_pred_val
-
-            if not use_clamp:
-                actual_state, _, _, _ = self.process_single_step(
-                    x_t=current_state, step_idx=step_idx, total_steps=steps, 
-                    embedding_matrix=embedding_matrix, apply_clamping=False,
-                    guidance_scale=guidance_scale, logit_scale=current_logit_scale, 
-                    temperature=temp, anchor_len=anchor_len, 
-                    self_cond=last_x0_pred, clean_prompt_embeds=prompt_embeds
-                )
-                current_state = actual_state
-            else:
-                current_state = new_state_clamped
-
-            # Re-anchor prompt every step (Redundant but safe)
-            if anchor_len > 0 and prompt_embeds is not None:
-                current_state[:, :anchor_len, :] = prompt_embeds[:, :anchor_len, :].to(dtype)
-
             final_tokens = current_token_ids
             
-            # Dynamic Early Stopping logic: MONITOR RESPONSE ONLY
-            response_tokens = current_token_ids[:, anchor_len:]
-            
-            if last_response_tokens is not None and torch.equal(response_tokens, last_response_tokens):
-                stable_count += 1
-            else:
-                stable_count = 0
-            
-            last_response_tokens = response_tokens
-            
-            # CONFIDENCE-BASED EXIT: If stable AND high confidence, exit early.
-            # 0.9 is a high bar, meaning the model is very sure.
-            is_high_conf = (step_conf > 0.9)
-            
-            if return_trajectory and (step_idx % max(1, steps // 20) == 0 or step_idx == steps - 1 or stable_count >= early_stopping_patience):
-                trajectory.append({
-                    "step": step_idx,
-                    "tokens": current_token_ids[0].cpu().tolist()
-                })
+            if return_trajectory and (step_idx % max(1, steps // 20) == 0):
+                trajectory.append({"step": step_idx, "tokens": current_token_ids[0].cpu().tolist()})
 
-            if early_stopping_patience > 0 and stable_count >= early_stopping_patience:
-                # Add confidence condition for even faster exit on simple prompts
-                if step_idx > (steps // 5) or is_high_conf:
-                    print(f"⚡ Early Exit: Output stabilized at step {step_idx} (Stability: {stable_count}, Conf: {step_conf:.2f})")
-                    break
+            if locked_mask.all():
+                print(f"⚡ Speedy Exit: All tokens locked at step {step_idx} (Threshold: {threshold})")
+                break
                 
-        # Final clamping to get the discrete tokens if not already done
-        if final_tokens is None: # This case should ideally not happen if current_token_ids is always set
-            _, final_tokens = self.clamp_to_vocabulary(current_state, embedding_matrix, logit_scale=logit_scale)
-            
         if return_trajectory:
             return current_state, final_tokens, trajectory
             
