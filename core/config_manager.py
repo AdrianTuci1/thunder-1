@@ -9,7 +9,7 @@ THUNDER_CONFIG = {
     # ----------------------------------------------------------------------
     "engine": {
         "model_path": "GSAI-ML/LLaDA-8B-Instruct",
-        "max_seq_len": 4096,
+        "max_seq_len": 512,
         "use_quantization": True,
         "trust_remote_code": True
     },
@@ -39,19 +39,19 @@ THUNDER_CONFIG = {
         "lora_alpha": 256,       # Scaling factor (alpha)
         
         # Optimization
-        "learning_rate": 3.0e-5, # Lowered for stability in Diffusion Fine-tuning   
-        "batch_size": 4,         # Reduced to 4 to fix OOM on 24GB VRAM
-        "grad_accum": 8,         # Increased to 8 to keep Effective Batch Size at 32
+        "learning_rate": 2.5e-5, # Slightly lower for 8B stability   
+        "batch_size": 1,         # Reduced to 1 to definitely fix OOM
+        "grad_accum": 16,        # Effective Batch Size = 16
         "max_steps": 2000,       
-        "warmup_steps": 1000,      
+        "warmup_steps": 200,      
         "optim": "adamw_8bit",   
         "weight_decay": 0.01,    
         "lr_scheduler": "cosine",
         "max_grad_norm": 1.0,    
         
         # Output & State
-        "output_dir": "./thunder_prefixlm_llama",
-        "save_steps": 500,       
+        "output_dir": "./thunder_llada_checkpoints",
+        "save_steps": 250,       
         "save_total_limit": 3,   
         "logging_steps": 1,      
         "seed": 3407,            

@@ -1,6 +1,7 @@
-import torch
 from unsloth import FastLanguageModel
+import torch
 import os
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from core.config_manager import THUNDER_CONFIG
 
@@ -30,7 +31,6 @@ class ThunderModelLoader:
         
         if is_llada:
             # LLaDA might need standard transformers if unsloth hasn't patched it yet
-            from transformers import AutoTokenizer, AutoModelForCausalLM
             
             self.tokenizer = AutoTokenizer.from_pretrained(model_to_load)
             self.model = AutoModelForCausalLM.from_pretrained(

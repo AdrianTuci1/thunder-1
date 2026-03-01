@@ -1,7 +1,8 @@
+from unsloth import FastLanguageModel
 import torch
 import torch.nn as nn
-from unsloth import FastLanguageModel
 import os
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 class TimestepEmbedder(nn.Module):
     """
@@ -53,16 +54,37 @@ class PrefixLMDiffusionAdapter:
 
         print(f"⚡ Thunder PrefixLM: Injecting LoRA (r={r}, alpha={lora_alpha})...")
         
-        self.model = FastLanguageModel.get_peft_model(
-            self.model,
-            r=r,
-            target_modules=target_modules,
-            lora_alpha=lora_alpha,
-            lora_dropout=0,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=3407,
-        )
+        try:
+            self.model = FastLanguageModel.get_peft_model(
+                self.model,
+                r=r,
+                target_modules=target_modules,
+                lora_alpha=lora_alpha,
+                lora_dropout=0,
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+                random_state=3407,
+            )
+        except Exception as e:
+            print(f"⚠️ Unsloth LoRA failed ({e}). Falling back to standard PEFT...")
+            
+            # Prepare for k-bit training if it's already quantized
+            if getattr(self.model, "is_loaded_in_4bit", False) or getattr(self.model, "is_loaded_in_8bit", False):
+                try:
+                    self.model = prepare_model_for_kbit_training(self.model, use_gradient_checkpointing=True)
+                except Exception:
+                    print("⚠️ Gradient checkpointing not supported by this model. Disabling for LoRA prep...")
+                    self.model = prepare_model_for_kbit_training(self.model, use_gradient_checkpointing=False)
+                
+            config = LoraConfig(
+                r=r,
+                lora_alpha=lora_alpha,
+                target_modules=target_modules,
+                lora_dropout=0,
+                bias="none",
+                task_type="CAUSAL_LM", # Close enough for non-causal diffusion bridge
+            )
+            self.model = get_peft_model(self.model, config)
         return self.model
 
     def adapt_for_diffusion(self, checkpoint_path=None):
@@ -92,7 +114,21 @@ class PrefixLMDiffusionAdapter:
         self.enable_bidirectional_attention()
         self.replace_forward_for_diffusion()
         
-        # 5. Embedding Training
+        # 5. LLaDA-Specific VRAM Optimizations
+        # If it's a LLaDA model, we can bypass the huge LM head to save VRAM.
+        # Checkpointing is skipped here as it can be unstable with standard PEFT.
+        model_type_str = str(type(self.model))
+        if "LLaDA" in model_type_str:
+            inner_model = self.model.model if hasattr(self.model, "model") else self.model
+            
+            # 5a. Bypass massive Logit Head (ff_out) to save VRAM
+            # LLaDA Head: 3072 -> 128,256. Gradient allocation is huge.
+            # We don't need it because we use our custom x0_head on hidden states.
+            if hasattr(inner_model, "transformer") and hasattr(inner_model.transformer, "ff_out"):
+                print("⚡ Thunder: Bypassing LLaDA ff_out head (Identity Patch) to save VRAM...")
+                inner_model.transformer.ff_out = nn.Identity().to(self.model.device).to(self.model.dtype)
+        
+        # 6. Embedding Training
         self.model.get_input_embeddings().weight.requires_grad = True
         self.model.is_thunder_adapted = True
         

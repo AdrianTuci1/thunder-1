@@ -1,3 +1,4 @@
+import unsloth
 print("⚡ Thunder Trace: Script started, importing dependencies...", flush=True)
 import os
 import sys
