@@ -6,11 +6,11 @@ from core.config_manager import THUNDER_CONFIG
 
 class ThunderModelLoader:
     """
-    Handles loading of Phi-4/Mamba models using Unsloth for optimized 4-bit/BF16 inference.
+    Handles loading of Qwen3.5-9B models using Unsloth for optimized 4-bit/BF16 inference.
     """
     
     def __init__(self, model_name=None):
-        self.model_name = model_name or "unsloth/Llama-3.2-3B-Instruct"
+        self.model_name = model_name or "Qwen/Qwen3.5-9B"
         self.max_seq_length = THUNDER_CONFIG["engine"]["max_seq_len"]
         self.model = None
         self.tokenizer = None
@@ -29,7 +29,8 @@ class ThunderModelLoader:
             max_seq_length=self.max_seq_length,
             load_in_4bit=load_in_4bit,
             dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16,
-            device_map="auto"
+            device_map="auto",
+            use_gradient_checkpointing="unsloth" if THUNDER_CONFIG["hardware"].get("gradient_checkpointing") else False,
         )
         
         # 3. Adapt model for PrefixLM Diffusion

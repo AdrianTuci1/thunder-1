@@ -8,49 +8,53 @@ THUNDER_CONFIG = {
     # 1. CORE ENGINE & HARDWARE
     # ----------------------------------------------------------------------
     "engine": {
-        "model_path": "unsloth/Llama-3.2-3B-Instruct",
-        "max_seq_len": 2048,
+        "model_path": "Qwen/Qwen3.5-9B",
+        "max_seq_len": 32768,      # Input context (Prompt)
+        "max_gen_len": 8192,       # Crystallization limit (Output)
     },
     
     "hardware": {
-        "load_in_4bit": True,    # Enables 4-bit quantization via Unsloth to fit 24GB VRAM
-        "bf16_support": True,    # Uses BFloat16 if supported by hardware (sm_8x / sm_9x)
-        "fused_kernels": True,   # Enables kernel fusion in kernels/paged_clamping.cu
-        "stream_count": 64,      # Number of parallel CUDA Streams
+        # Profile: RTX 4090 (24GB VRAM)
+        "load_in_4bit": True,
+        "batch_size": 1,
+        "grad_accum": 16,
+        
+        # Profile: NVIDIA A100 (80GB VRAM) - Uncomment to activate
+        # "load_in_4bit": False,   # Native BF16 for maximum precision
+        # "batch_size": 8,
+        # "grad_accum": 2,
+
+        "bf16_support": True,
+        "fused_kernels": True,
+        "flash_attention": True,
+        "gradient_checkpointing": True,
+        "stream_count": 64,      # Can be increased to 128 on A100
     },
     
     # ----------------------------------------------------------------------
-    # 2. DIFFUSION ARCHITECTURE (MERCURY 1)
+    # 2. DIFFUSION CORE (RESONANCE FIELD)
     # ----------------------------------------------------------------------
     "diffusion": {
-        "diffusion_steps": 2000,       # T (Diffusion Process steps)
-        "noise_schedule_type": "sqrt", # Custom text diffusion schedule
-        "cfg_drop_rate": 0.15,         # Prompt dropout for Classifier-Free Guidance
+        "steps": 2000,                # Training timesteps (T)
+        "schedule": "sigmoid",        # Transitioned to Sigmoid for smoother text logic
+        "cfg_drop_rate": 0.1,         # Slightly lower dropout for 9B stability
     },
     
     # ----------------------------------------------------------------------
-    # 3. TRAINING & FINE-TUNING
+    # 3. TRAINING & ADAPTATION (LoRA)
     # ----------------------------------------------------------------------
     "training": {
-        # LoRA Settings
-        "lora_rank": 128,        # Rank (r) of LoRA adapters
-        "lora_alpha": 256,       # Scaling factor (alpha)
+        "lora_rank": 128,              
+        "lora_alpha": 512,            # Increased for stronger 9B adaptation
         
-        # Optimization
-        "learning_rate": 8e-5,   
-        "batch_size": 2,         # Per-device training batch size
-        "grad_accum": 8,         # Gradient accumulation steps
-        "max_steps": 1500,       
-        "warmup_steps": 50,      
-        "optim": "adamw_8bit",   
-        "weight_decay": 0.01,    
+        "learning_rate": 4e-5,        # Lowered for 9B model stability
+        "max_steps": 20000,           # Target for solid AR-to-Diffusion transfer
+        "warmup_steps": 200,      
+        "optim": "paged_adamw_8bit",  # More stable for long context
         "lr_scheduler": "cosine",
-        "max_grad_norm": 1.0,    
-        
-        # Output & State
-        "output_dir": "./thunder_prefixlm_llama",
-        "save_steps": 200,       
-        "save_total_limit": 3,   
+        "output_dir": "./thunder_qwen_32k",
+        "save_steps": 500,       
+        "save_total_limit": 5,   
         "logging_steps": 1,      
         "seed": 3407,            
     },
@@ -60,13 +64,13 @@ THUNDER_CONFIG = {
     # ----------------------------------------------------------------------
     "pipeline": {
         "dataset_name": [
+            "Open-Thoughts/Open-Thoughts-0.5B", # Dense CoT reasoning for Diffusion-LM
             "Open-Orca/SlimOrca",
             "nickrosh/Evol-Instruct-Code-80k-v1",
             "qwedsacf/competition_math",
-            "nomic-ai/gpt4all-j-prompt-generations",
             "zai-org/LongAlign-10k"
         ],
-        "dataset_ratios": [0.35, 0.15, 0.10, 0.20, 0.20], # Rebalanced for text logic
+        "dataset_ratios": [0.25, 0.25, 0.15, 0.15, 0.20], # Rebalanced for reasoning density
         "num_proc": 4,           
         "packing": True,         # Enables Constant Length Packing
     },
@@ -76,9 +80,9 @@ THUNDER_CONFIG = {
     # ----------------------------------------------------------------------
     "logic": {
         "modes": {
-            "instant": {"base": 10,  "max": 25},
-            "fast":    {"base": 20,  "max": 50},
-            "thinking":{"base": 50,  "max": 100}
+            "instant": {"base": 8,   "max": 15}, # Optimized for 8-step target
+            "fast":    {"base": 12,  "max": 30},
+            "thinking":{"base": 30,  "max": 100}
         },
         "scaling": {
             "length_weight": 0.5, # Multiplier for log10(length)

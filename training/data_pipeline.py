@@ -5,7 +5,7 @@ from training.noise_scheduler import ThunderNoiseScheduler
 
 class ThunderDataPipeline:
     """
-    Handles data loading and preprocessing for 120k context windows.
+    Handles data loading and preprocessing for up to 32k context windows (Qwen3.5-9B).
     Implements Constant Length Packing to ensure maximum GPU utilization.
     Now supports Noise Augmentation for Diffusion-based training.
     """

@@ -4,7 +4,7 @@ from core.config_manager import THUNDER_CONFIG
 from training.noise_scheduler import ThunderNoiseScheduler
 import torch.nn.functional as F
 
-class PrefixLMDiffusionEngine:
+class ThunderDiffusionEngine:
     """
     The Continuous Diffusion Engine using PrefixLM and x0-parametrization.
     Implements the generation loops with the Clamping Trick.
@@ -118,12 +118,20 @@ class PrefixLMDiffusionEngine:
 
     def generate(self, shape, embedding_matrix, steps=None, prompt_embeds=None, anchor_len=0, 
                  apply_clamping=True, guidance_scale=1.0, uncond_prompt_embeds=None, 
-                 return_trajectory=False, early_stopping_patience=3):
+                 return_trajectory=False, early_stopping_patience=3, max_new_tokens=None):
         """
         Generation with Dynamic Decoding Steps (10 to 100) based on complexity.
-        embedding_matrix: EXPECTS RAW EMBEDDINGS
-        prompt_embeds: EXPECTS RAW EMBEDDINGS
+        max_new_tokens: If specified, dynamically resize the "noise canvas" to save VRAM and latency.
         """
+        # 0. Adjust shape if max_new_tokens is specified
+        if max_new_tokens is not None:
+             batch_size = shape[0]
+             hidden_size = shape[2]
+             # Total length = prompt + new tokens
+             total_len = anchor_len + max_new_tokens
+             shape = (batch_size, total_len, hidden_size)
+             print(f"⚡ Thunder: Dynamic Canvas initialized to {total_len} tokens ({anchor_len} prompt + {max_new_tokens} output)")
+
         # Dynamic Steps Logic (Paper Section C: Downsampling)
         # We scale steps between 10 (simple) and 100 (complex) depending on the prompt length
         max_dynamic_steps = 100
@@ -153,6 +161,7 @@ class PrefixLMDiffusionEngine:
         last_response_tokens = None
         last_x0_pred = None # Zero initialized implicitly by None in forward usually, but let's be explicit
         stable_count = 0
+        step_conf = 0.0 # Track confidence for adaptive clamping
         
         for step_idx in range(steps):
             # 1. Temperature & Logit Scale Annealing
@@ -164,10 +173,18 @@ class PrefixLMDiffusionEngine:
             # This restricts premature hard-commitment.
             current_logit_scale = (logit_scale * 0.5) + (logit_scale * 0.5) * (step_idx / steps)
             
-            # 2. Iterative Clamping (Mercury 1 Adaptation)
-            # Apply clamping earlier in the intermediate steps (50% onwards) rather than just the final 20%
-            # This grounds the parallel generation and reduces accumulated rounding errors during coarse-to-fine refinement.
-            use_clamp = apply_clamping and (step_idx > int(steps * 0.5))
+            # 2. Iterative Clamping (Mercury 1 & 2 Adaptation)
+            # MAGNETIC CLAMPING: Start the "magnet" effect earlier (e.g. 30% onwards) 
+            # if we see high confidence (step_conf > 0.85) in previous steps.
+            # Otherwise, default to 50% as a safety threshold.
+            clamping_start_threshold = 0.3 if (step_idx > 0 and step_conf > 0.85) else 0.5
+            use_clamp = apply_clamping and (step_idx > int(steps * clamping_start_threshold))
+            
+            # --- AGGRESSIVE LOGIT SCALING ---
+            # If we are in the clamping phase, boost the logit scale to "socialize" 
+            # the latents towards the nearest tokens more aggressively.
+            if use_clamp:
+                current_logit_scale = current_logit_scale * 1.5 
             
             new_state_clamped, current_token_ids, x0_pred_val, step_conf = self.process_single_step(
                 x_t=current_state, 
@@ -214,10 +231,17 @@ class PrefixLMDiffusionEngine:
             
             last_response_tokens = response_tokens
             
-            # CONFIDENCE-BASED EXIT: If stable AND high confidence, exit early.
-            # 0.9 is a high bar, meaning the model is very sure.
+            # Confidence high-bar for early exit. 
             is_high_conf = (step_conf > 0.9)
             
+            # --- CONFIDENCE-BASED JUMP (Forced Resolution) ---
+            # If the output has stabilized AND the confidence is extremely high (> 0.95),
+            # we "jump" directly to the end, skipping remaining steps.
+            # This is the primary mechanism for breaking the 2000-step barrier for simple prompts.
+            if is_high_conf and stable_count >= 1: # Even 1 step of stability is enough at 0.95+
+                print(f"⚡ Confidence Jump: High certainty detected at step {step_idx} (Conf: {step_conf:.4f}). Exit Forced.")
+                break
+
             if return_trajectory and (step_idx % max(1, steps // 20) == 0 or step_idx == steps - 1 or stable_count >= early_stopping_patience):
                 trajectory.append({
                     "step": step_idx,
@@ -226,7 +250,7 @@ class PrefixLMDiffusionEngine:
 
             if early_stopping_patience > 0 and stable_count >= early_stopping_patience:
                 # Add confidence condition for even faster exit on simple prompts
-                if step_idx > (steps // 5) or is_high_conf:
+                if step_idx > (steps // 10) or is_high_conf: # Reduced from steps // 5
                     print(f"⚡ Early Exit: Output stabilized at step {step_idx} (Stability: {stable_count}, Conf: {step_conf:.2f})")
                     break
                 

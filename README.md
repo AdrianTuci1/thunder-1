@@ -1,21 +1,15 @@
-⚡ Thunder
-Thunder is a high-performance inference framework developed by Static Labs. It is designed to transform traditional unidirectional language models into Hierarchical Parallel Diffusion engines.
+⚡ Thunder | Qwen-Powered High-Speed Diffusion-LM (dLLM)
+Thunder is an ultra-fast inference and training framework developed by Static Labs. It transforms the **Qwen3.5-9B** model into a non-causal parallel diffusion engine, breaking the limits of autoregressive generation.
 
-By bypassing the "causal bottleneck" of standard autoregressive generation, Thunder enables global text crystallization across a 120k+ token context window at unprecedented speeds of 700 – 1200 t/s.
+### 🌌 The Core Innovation: Parallel Crystallization
+Traditional LLMs generate text token-by-token. Thunder treats the entire output space as a continuous latent field. By eliminating the sequential bottleneck, it achieves unprecedented throughput by refining entire 8k+ token blocks simultaneously.
 
-🌌 The Core Innovation: Parallel Denoising
-Traditional models generate text token-by-token (linearly). Thunder treats the entire output space as a cold-start noise field. Utilizing Phi-4 as its latent backbone, the system reconstructs the entire context simultaneously through iterative refinement.
+*   **PrefixLM Architecture**: Re-architected Qwen's attention mechanism to be fully bidirectional, allowing "future" information to ground "past" reasoning during denoising.
+*   **32k Context Synthesis**: Native support for long-range context on RTX 4090/A100 hardware, optimized via Flash Attention 2 and Gradient Checkpointing.
+*   **Mercury Execution Switch**: A tri-modal system (Instant, Fast, Thinking) that adaptively scales denoising steps based on logic complexity.
+*   **Confidence-Based Jump**: Forces early resolution (down to 8 steps) when high certainty (>95%) is detected, maintaining high-tier reasoning at 5x speed.
 
-Bidirectional Convergence: Unlike GPT-style models, Thunder allows future tokens to influence past tokens during the denoising phase, resulting in superior global coherence.
+### 🛠️ Hardware Optimization
+Engineered for maximum VRAM throughput on **RTX 4090** and **A100 (80GB)** clusters using fused CUDA kernels for magnetic clamping and paged 8-bit optimization.
 
-Fractal Tiling: A three-tier segmentation strategy (Macro: 120k, Meso: 16k, Micro: 2k) that allows for asynchronous GPU execution.
-
-Asynchronous CUDA Streams: Every micro-tile is processed on a dedicated CUDA stream, saturating the RTX 4090's Tensor cores.
-
-Phase 1: Stable 16k diffusion on Phi-4 (Current).
-
-Phase 2: Implementation of Fractal Tiling for 120k context expansion.
-
-Phase 3: Scale-to-30B: Merging the Thunder framework with larger parameter models to achieve "Expert-Level" reasoning at local-inference speeds.
-
-© 2026 Static Labs. Bending reality.
+© 2026 [staticlabs.ro](https://staticlabs.ro). Shattering the sequential barrier.

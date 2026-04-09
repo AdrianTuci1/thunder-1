@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
+from peft import PeftModel
 from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +18,7 @@ from training.data_pipeline import ThunderDataPipeline
 
 class DiffusionLMTrainer:
     """
-    Custom training loop for continuous Diffusion-LM with Llama-3.2 (PrefixLM).
+    Custom training loop for continuous Diffusion-LM with Qwen3.5-9B (PrefixLM).
     We do NOT use SFTTrainer because we need tight control over:
     1. The continuous embedding bridge.
     2. The diffusion timestep sampling.
@@ -42,7 +43,10 @@ class DiffusionLMTrainer:
         print(f"⚡ Thunder PrefixLM: Starting custom training loop on {self.device}...")
         
         # Prepare DataLoader
-        batch_size = self.config["training"].get("batch_size", 4)
+        # Pull batching from hardware config if available, fallback to training config
+        batch_size = THUNDER_CONFIG["hardware"].get("batch_size") or self.config.get("batch_size", 4)
+        grad_accum = THUNDER_CONFIG["hardware"].get("grad_accum") or self.config.get("grad_accum", 1)
+        
         dataloader = DataLoader(
             dataset, 
             batch_size=batch_size, 
@@ -133,6 +137,9 @@ class DiffusionLMTrainer:
                                 attention_mask=cfg_mask
                             ).detach()
                     
+                    # Ensure we are using a non-causal mask explicitly in trainer too
+                    # By passing a mask of ones, we override any default causal behavior
+                    # if the model was correctly adapted.
                     x0_pred = self.model.diffusion_forward(
                         x_t=noisy_latents, 
                         t=timesteps, 
@@ -161,23 +168,19 @@ class DiffusionLMTrainer:
                     optimizer.zero_grad()
                     continue
                     
-                # 6. Backward & Step
+                # 6. Backward & Step (with Gradient Accumulation)
+                # Scale loss by accumulation steps
+                loss = loss / grad_accum
                 loss.backward()
                 
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                
-                # Logging
-                progress_bar.update(1)
-                progress_bar.set_postfix({
-                    "Loss": f"{loss.item():.4f}", 
-                    "Denoising": f"{denoising_loss.item():.4f}"
-                })
-                global_step += 1
+                if (step + 1) % grad_accum == 0 or (step + 1) == len(dataloader):
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
                 
                 # Periodic Preview: Decode x0 for the sample with the LOWEST noise in this batch
                 # to see if coherence is emerging where it should.
@@ -249,7 +252,7 @@ class DiffusionLMTrainer:
 
 def run_training():
     loader = ThunderModelLoader()
-    # Load base Llama 3.2 3B
+    # Load base Qwen3.5-9B
     model, tokenizer = loader.load_model(load_in_4bit=THUNDER_CONFIG["hardware"]["load_in_4bit"])
     
     # 1. Ensure tokenizer has a pad token
@@ -260,10 +263,12 @@ def run_training():
     adapter = PrefixLMDiffusionAdapter(model)
     
     # Target all linear layers for profound capability shift (from causal to bidirectional)
-    from peft import PeftModel
     if not isinstance(model, PeftModel):
         print("⚡ Thunder PrefixLM: Applying new LoRA adapters...")
-        model = adapter.apply_lora(r=128, lora_alpha=256) 
+        model = adapter.apply_lora(
+            r=THUNDER_CONFIG["training"]["lora_rank"], 
+            lora_alpha=THUNDER_CONFIG["training"]["lora_alpha"]
+        ) 
     else:
         print("⚡ Thunder PrefixLM: Model already has LoRA adapters. Skipping re-application.")
         
@@ -271,9 +276,9 @@ def run_training():
     
     # 3. Load dataset
     pipeline = ThunderDataPipeline(tokenizer)
-    dataset_name = THUNDER_CONFIG["training"].get("dataset_name", "Open-Orca/OpenOrca")
-    print(f"⚡ Thunder: Preparing dataset {dataset_name}...")
-    dataset = pipeline.prepare_dataset(dataset_name, augment=False)
+    dataset_names = THUNDER_CONFIG["pipeline"]["dataset_name"]
+    print(f"⚡ Thunder: Preparing dataset mix...")
+    dataset = pipeline.prepare_dataset(dataset_names, augment=True) # Always augment (noise) for diffusion training
     
     # Optional: grab a tiny subset for sanity checking if testing
     dataset = dataset.select(range(min(5000, len(dataset)))) 

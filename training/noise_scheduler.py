@@ -10,8 +10,8 @@ class ThunderNoiseScheduler:
     """
     
     def __init__(self, diffusion_steps=None, schedule_type=None):
-        self.diffusion_steps = diffusion_steps or THUNDER_CONFIG["diffusion"]["diffusion_steps"]
-        self.schedule_type = schedule_type or THUNDER_CONFIG["diffusion"].get("noise_schedule_type", "linear")
+        self.diffusion_steps = diffusion_steps or THUNDER_CONFIG["diffusion"]["steps"]
+        self.schedule_type = schedule_type or THUNDER_CONFIG["diffusion"].get("schedule", "linear")
         
         if self.schedule_type == "linear":
             self.betas = torch.linspace(1e-4, 0.02, self.diffusion_steps)

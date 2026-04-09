@@ -34,7 +34,7 @@ class TimestepEmbedder(nn.Module):
 
 class PrefixLMDiffusionAdapter:
     """
-    Adapts a causal LLM (like Llama-3.2) for continuous diffusion
+    Adapts a causal LLM (like Qwen3.5) for continuous diffusion
     by using PrefixLM (bidirectional attention) and x0-parametrization.
     """
     
@@ -137,7 +137,12 @@ class PrefixLMDiffusionAdapter:
             
         # KV cache makes no sense for full-sequence parallel forward passes
         self.model.config.use_cache = False 
-
+        
+        # Explicitly for Qwen/Llama architectures in Transformers
+        if hasattr(self.model.config, "is_decoder"):
+            self.model.config.is_decoder = False # Force it to behave like an encoder/PrefixLM
+        if hasattr(self.model.config, "is_encoder_decoder"):
+            self.model.config.is_encoder_decoder = False
 
     def replace_forward_for_diffusion(self):
         """
@@ -157,7 +162,12 @@ class PrefixLMDiffusionAdapter:
             batch_size, seq_len, _ = x_t.shape
             
             if attention_mask is None:
+                # Force full bidirectional attention mask (all ones)
                 attention_mask = torch.ones((batch_size, seq_len), device=device, dtype=torch.long)
+            # Ensure mask is 2D, as Transformers expect [B, L] and handles 4D mask internally
+            # For PrefixLM/Diffusion-LM, we MUST NOT use a causal mask.
+            # Llama/Qwen with flash_attention_2 or sdpa will use causal mask if is_causal=True in config.
+            # We already set is_causal=False in enable_bidirectional_attention.
             
             # 1. Inject Timestep
             t_embed = self_model.timestep_embedder(t) # [B, D]
@@ -171,23 +181,21 @@ class PrefixLMDiffusionAdapter:
             
             # 3. Backbone Forward Pass
             # We bypass the Embedding layer and go directly into the Transformer blocks
-            # Llama models usually have `model.model` as the core Transformer, 
+            # Transformers models (like Qwen/Llama) usually have `model.model` as the core Transformer, 
             # and `model.lm_head` as the vocabulary projector.
             # Depending on if it's PeftModel or LlamaForCausalLM, the path might be slightly different.
             
             # We pass inputs_embeds directly and get the hidden states.
             # We need to find the core Transformer module regardless of PEFT wrappers.
-            if hasattr(self_model, "base_model") and hasattr(self_model.base_model, "model") and hasattr(self_model.base_model.model, "model"):
-                transformer = self_model.base_model.model.model
+            if hasattr(self_model, "base_model") and hasattr(self_model.base_model, "model"):
+                 # Check if it's a PEFT model
+                 if hasattr(self_model.base_model.model, "model"):
+                     transformer = self_model.base_model.model.model
+                 else:
+                     transformer = self_model.base_model.model
             elif hasattr(self_model, "model"):
-                # Usually it's model.model for LlamaForCausalLM, but 
-                # actually LlamaForCausalLM has `.model` which IS the LlamaModel!
-                if isinstance(self_model.model, torch.nn.Module) and hasattr(self_model.model, "layers"):
-                    transformer = self_model.model
-                elif hasattr(self_model.model, "model"):
-                    transformer = self_model.model.model
-                else:
-                    transformer = self_model.model
+                # Standard Llama/Qwen model structure
+                transformer = self_model.model
             else:
                 transformer = self_model
 
