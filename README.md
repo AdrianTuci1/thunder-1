@@ -13,3 +13,14 @@ Traditional LLMs generate text token-by-token. Thunder treats the entire output 
 Engineered for maximum VRAM throughput on **RTX 4090** and **A100 (80GB)** clusters using fused CUDA kernels for magnetic clamping and paged 8-bit optimization.
 
 © 2026 [staticlabs.ro](https://staticlabs.ro). Shattering the sequential barrier.
+
+## dLLM Training Readiness Kit
+- [docs/dllm/current_state_audit.md](docs/dllm/current_state_audit.md)
+- [docs/dllm/training_playbook.md](docs/dllm/training_playbook.md)
+- [docs/dllm/platform_runtime_guide.md](docs/dllm/platform_runtime_guide.md)
+- [configs/dllm_1b_blueprint.json](configs/dllm_1b_blueprint.json)
+- [scripts/audit_training_readiness.py](scripts/audit_training_readiness.py)
+- [scripts/verify_dataset_integrity.py](scripts/verify_dataset_integrity.py)
+- [scripts/report_training_status.py](scripts/report_training_status.py)
+- [scripts/preflight_dllm.sh](scripts/preflight_dllm.sh)
+- [scripts/launch_train_torchrun.sh](scripts/launch_train_torchrun.sh)

@@ -23,11 +23,11 @@ class TimestepEmbedder(nn.Module):
         # num_train_timesteps is usually 2000
         # diffusion_steps (T) is usually 2000
         from core.config_manager import THUNDER_CONFIG
-        max_t = THUNDER_CONFIG["diffusion"].get("diffusion_steps", 2000)
+        max_t = THUNDER_CONFIG["diffusion"].get("steps", 2000)
         t_norm = t.float() / max_t
         
-        # Ensure t_norm is correct dtype (bfloat16 if supported, else float16)
-        target_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        # Keep CPU execution stable while matching CUDA mixed precision when available.
+        target_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
         t_norm = t_norm.to(target_dtype)
         return self.mlp(t_norm)
 

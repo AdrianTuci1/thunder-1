@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import FastAPI
 from core.model_loader import ThunderModelLoader
-from core.diffusion_engine import PrefixLMDiffusionEngine
+from core.diffusion_engine import ThunderDiffusionEngine
 from core.scheduler import ThunderScheduler
 from core.dynamic_batching import DynamicBatcher
 from reasoning.router import ThunderRouter
@@ -20,7 +20,7 @@ class ThunderApp:
         self.batcher = None
 
         model, tokenizer = self.loader.load_model()
-        self.engine = PrefixLMDiffusionEngine(model)
+        self.engine = ThunderDiffusionEngine(model)
         
         # Initialize the dynamic batcher for high-throughput inference (Mercury 1 Adaptation)
         # Now uses the refined adaptive scheduler for optimal steps calculation
@@ -32,8 +32,6 @@ thunder = ThunderApp()
 
 @app.on_event("startup")
 async def startup_event():
-    await thunder.initialize()
-    
     # OpenAI API Interface Mounting
     from api.openai_api import setup_openai_routes
     app.include_router(setup_openai_routes(thunder))
