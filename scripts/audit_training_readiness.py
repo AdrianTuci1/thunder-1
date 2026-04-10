@@ -23,6 +23,8 @@ def has_text(relative_path: str, pattern: str) -> bool:
 def repo_has_pattern(pattern: str) -> bool:
     regex = re.compile(pattern)
     for path in ROOT.rglob("*.py"):
+        if path.name == "audit_training_readiness.py":
+            continue
         if regex.search(path.read_text(encoding="utf-8")):
             return True
     return False
@@ -35,16 +37,21 @@ def build_checks():
     config_text = read_text("core/config_manager.py")
     trainer_text = read_text("training/diffusion_lm_trainer.py")
     data_pipeline_text = read_text("training/data_pipeline.py")
-    diffusion_model_text = read_text("core/diffusion_model.py")
+    scratch_model_text = read_text("core/scratch_dllm.py")
     diffusion_engine_text = read_text("core/diffusion_engine.py")
     blueprint = json.loads(read_text("configs/dllm_1b_blueprint.json"))
 
-    from_scratch_ready = "from_pretrained" not in model_loader_text and "Qwen/" not in config_text
+    from_scratch_ready = (
+        exists("core/scratch_dllm.py")
+        and exists("training/run_from_scratch.py")
+        and '"model_source": "scratch"' in config_text
+        and "ThunderScratchDiffusionLM" in model_loader_text
+    )
     checks.append(
         {
             "name": "From-scratch 0-1B training",
             "status": "OK" if from_scratch_ready else "MISSING",
-            "detail": "Current stack still assumes a pretrained Qwen backbone plus LoRA, not a clean from-scratch dLLM.",
+            "detail": "A scratch model, scratch training entrypoint and scratch loader path should all exist together.",
         }
     )
 
@@ -60,42 +67,53 @@ def build_checks():
         }
     )
 
-    has_bidirectional_switch = "is_causal = False" in diffusion_model_text and "torch.ones((batch_size, seq_len)" in diffusion_model_text
+    has_bidirectional_switch = (
+        "build_bidirectional_attention_mask" in scratch_model_text
+        and "is_causal=False" in scratch_model_text
+        and exists("tests/test_scratch_dllm.py")
+    )
     checks.append(
         {
             "name": "Bidirectional attention / no causal mask",
-            "status": "PARTIAL" if has_bidirectional_switch else "MISSING",
-            "detail": "Mask disabling exists in code, but there is no explicit attention-level verification test for every block.",
+            "status": "OK" if has_bidirectional_switch else "MISSING",
+            "detail": "Scratch attention should use non-causal SDPA plus an explicit unit test for the bidirectional mask.",
         }
     )
 
     has_dynamic_canvas = "max_new_tokens" in diffusion_engine_text and "Dynamic Canvas" in diffusion_engine_text
-    canvas_in_training = "dynamic_canvas_training" in trainer_text
+    canvas_in_training = "_apply_length_curriculum" in trainer_text and "curriculum_lengths" in config_text
     checks.append(
         {
-            "name": "Dynamic canvas",
-            "status": "PARTIAL" if has_dynamic_canvas and not canvas_in_training else ("OK" if has_dynamic_canvas else "MISSING"),
-            "detail": "Inference has dynamic canvas support. Training still needs sequence-length curriculum and canvas-aware batching.",
+            "name": "Dynamic canvas / length curriculum",
+            "status": "OK" if has_dynamic_canvas and canvas_in_training else ("PARTIAL" if has_dynamic_canvas else "MISSING"),
+            "detail": "Inference should expose dynamic output canvas, and training should stage sequence lengths instead of jumping straight to 2048 everywhere.",
         }
     )
 
-    has_parallel_blocks = "packing" in data_pipeline_text and "num_workers" in trainer_text
-    strong_block_pipeline = "block_size" in data_pipeline_text and "prefetch" in data_pipeline_text
+    has_parallel_blocks = "pack_texts" in data_pipeline_text and "block_size" in data_pipeline_text
+    strong_block_pipeline = has_parallel_blocks and exists("tests/test_data_pipeline.py")
     checks.append(
         {
-            "name": "Parallel text block processing",
-            "status": "PARTIAL" if has_parallel_blocks and not strong_block_pipeline else ("OK" if strong_block_pipeline else "MISSING"),
-            "detail": "Basic batching exists, but true packed block processing, shard pre-tokenization and document-aware packing are still absent.",
+            "name": "Packed text block processing",
+            "status": "OK" if strong_block_pipeline else ("PARTIAL" if has_parallel_blocks else "MISSING"),
+            "detail": "The repo should expose a fixed-length packer for 2048-token blocks and cover it with a unit test.",
         }
     )
 
     manifest_local = exists("data/manifests/dllm_corpus_manifest.local.json")
     raw_files = [path for path in (ROOT / "data").rglob("*") if path.is_file() and "manifest" not in path.parts]
+    hf_verifier = exists("scripts/verify_hf_dataset_sources.py") and "pretrain_hf_datasets" in config_text
     checks.append(
         {
             "name": "Dataset integrity workflow",
-            "status": "PARTIAL" if manifest_local and raw_files else "MISSING",
-            "detail": "A manifest example exists, but there is no populated local manifest with real dataset shards checked into the workspace.",
+            "status": "OK" if manifest_local and raw_files else ("PARTIAL" if hf_verifier else "MISSING"),
+            "detail": (
+                "Local manifest and raw shards are present."
+                if manifest_local and raw_files
+                else "Hugging Face source verification is wired in, but a populated local manifest with real downloaded shards is still missing."
+                if hf_verifier
+                else "A manifest example exists, but there is no populated local manifest with real dataset shards checked into the workspace."
+            ),
         }
     )
 

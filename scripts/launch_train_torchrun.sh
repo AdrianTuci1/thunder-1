@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${TRAIN_SCRIPT:?Set TRAIN_SCRIPT to the training entrypoint, e.g. training/run_from_scratch.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-training/run_from_scratch.py}"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 NNODES="${NNODES:-1}"

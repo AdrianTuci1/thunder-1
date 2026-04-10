@@ -7,16 +7,19 @@
   "model": {
     "from_scratch": true,
     "family": "bidirectional_diffusion_transformer",
-    "target_params": 860000000,
-    "vocab_size": 64000,
-    "hidden_size": 2048,
+    "target_params": 840000000,
+    "vocab_size": 49152,
+    "embedding_dim": 1536,
+    "latent_dim": 1280,
     "num_layers": 28,
-    "num_attention_heads": 16,
-    "ffn_hidden_size": 8192,
+    "num_attention_heads": 20,
+    "ffn_hidden_size": 5120,
     "max_seq_len": 2048,
     "causal_mask": false,
     "bidirectional_attention": true,
     "self_conditioning": true,
+    "use_rope": true,
+    "rope_theta": 100000.0,
     "x0_parameterization": true,
     "timestep_embedding": true,
     "tie_input_output_embeddings": true,
@@ -28,8 +31,9 @@
     "latent_bridge": {
       "enabled": true,
       "type": "linear_ln_linear",
-      "compression_ratio": 2
-    }
+      "compression_ratio": 1.2
+    },
+    "tokenizer_name": "HuggingFaceTB/SmolLM2-135M"
   },
   "data": {
     "manifest_path": "data/manifests/dllm_corpus_manifest.local.json",

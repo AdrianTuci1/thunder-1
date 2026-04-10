@@ -25,17 +25,17 @@ class DiffusionLMLoss:
         if logit_scale != 1.0:
             logits = logits / logit_scale
             
-        logits = logits.view(-1, logits.size(-1))
-        targets = target_token_ids.view(-1)
+        logits = logits.reshape(-1, logits.size(-1))
+        targets = target_token_ids.reshape(-1)
         
         if attention_mask is not None:
             targets_masked = targets.clone()
-            mask_flat = attention_mask.view(-1)
+            mask_flat = attention_mask.reshape(-1)
             targets_masked[mask_flat == 0] = -100
             
             # Loss per position
             ce_loss_raw = F.cross_entropy(logits, targets_masked, ignore_index=-100, reduction='none')
-            ce_loss_matrix = ce_loss_raw.view(batch_size, seq_len)
+            ce_loss_matrix = ce_loss_raw.reshape(batch_size, seq_len)
             
             # For gamma(t), Mercury uses a time-dependent weighting, but uniform or simplified SNR
             # weights can be applied. We start with uniform scaled by attention_mask.

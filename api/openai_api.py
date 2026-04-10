@@ -3,7 +3,7 @@ import json
 import asyncio
 import random
 from typing import List, Optional
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -107,7 +107,7 @@ def setup_openai_routes(thunder_instance):
                 "thunder_metrics": {
                     "mode": mode,
                     "duration_ms": round(duration * 1000, 2),
-                    "tokens_per_second": round(token_count / duration, 2)
+                    "tokens_per_second": round(token_count / max(duration, 1e-6), 2)
                 }
             }
         else:

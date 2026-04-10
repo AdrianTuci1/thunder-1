@@ -13,11 +13,14 @@ class ThunderScheduler:
         self.mode_configs = THUNDER_CONFIG["logic"]["modes"]
         self.scaling_configs = THUNDER_CONFIG["logic"]["scaling"]
 
-    def calculate_steps(self, mode="fast", anchor_len=0):
+    def calculate_steps(self, mode="fast", anchor_len=0, predicted_length=None):
         """
         DYNAMIC STEPS (Mercury 1): Determines optimal iterations based on mode and prompt complexity.
         """
         import math
+
+        if predicted_length is not None:
+            anchor_len = predicted_length
         
         # 1. Base steps from mode or default
         if mode and mode in self.mode_configs:

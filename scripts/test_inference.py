@@ -1,83 +1,175 @@
 import os
 import sys
-import torch
-from unsloth import FastLanguageModel
+import modal
+from typing import List, Optional
 
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Project path setup
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-from core.model_loader import ThunderModelLoader
-from core.diffusion_engine import ThunderDiffusionEngine
-from core.scheduler import ThunderScheduler
-from reasoning.router import ThunderRouter
-from reasoning.personality import ThunderPersonality
-from core.config_manager import THUNDER_CONFIG
+# Modal Image Setup
+image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install(
+        "torch==2.4.0",
+        "transformers>=4.40.0",
+        "datasets>=2.18.0",
+        "accelerate>=0.28.0",
+        "tokenizers>=0.19.0",
+        "tqdm",
+    )
+    .add_local_dir(
+        PROJECT_ROOT,
+        remote_path="/thunder",
+        ignore=[".git", "**/__pycache__", ".venv", "runs/**"],
+    )
+)
 
-def run_test_inference(query, mode=None):
-    print("⚡ Thunder: Running inference test with Qwen3.5-9B Diffusion...")
+volume = modal.Volume.from_name("thunder-checkpoints")
+app = modal.App("thunder-inference")
+
+@app.function(
+    image=image,
+    gpu="L40S",
+    volumes={"/checkpoints": volume},
+)
+def run_interactive_test(checkpoint_name: str, prompts: List[str]):
+    import os
+    import sys
     
-    loader = ThunderModelLoader()
-    model, tokenizer = loader.load_model()
+    # Intram in folderul proiectului din container
+    os.chdir("/thunder")
+    sys.path.insert(0, "/thunder")
     
-    # 2. Setup Engine
-    scheduler = ThunderScheduler()
-    router = ThunderRouter()
-    personality = ThunderPersonality()
-    engine = ThunderDiffusionEngine(model, scheduler)
+    import torch
+    from core.config_manager import THUNDER_CONFIG
+    from core.scratch_dllm import ThunderScratchDiffusionLM, ScratchDLMConfig
+    from training.noise_scheduler import ThunderNoiseScheduler
+    from transformers import AutoTokenizer
+
+    # --- Definire Sampler ---
+    class DiffusionSampler:
+        def __init__(self, model, tokenizer, scheduler):
+            self.model = model
+            self.tokenizer = tokenizer
+            self.scheduler = scheduler
+            self.device = model.device
+            self.steps = scheduler.diffusion_steps
+            self.alphas_cumprod = scheduler.alphas_cumprod.to(self.device).float()
+
+        @torch.no_grad()
+        def sample(
+            self, 
+            prefix_text: str = "", 
+            max_length: int = 64, 
+            num_inference_steps: int = 50,
+            temperature: float = 1.0,
+            self_conditioning: bool = True
+        ) -> str:
+            self.model.eval()
+            prefix_ids = self.tokenizer.encode(prefix_text, add_special_tokens=False)
+            prefix_len = len(prefix_ids)
+            if prefix_len >= max_length:
+                return prefix_text
+                
+            embedding_matrix = self.model.get_input_embeddings().weight
+            latent_dim = embedding_matrix.shape[1]
+            x_t = torch.randn((1, max_length, latent_dim), device=self.device)
+            
+            if prefix_len > 0:
+                prefix_ids_tensor = torch.tensor([prefix_ids], device=self.device)
+                prefix_embeds = self.model.get_input_embeddings()(prefix_ids_tensor)
+                x_t[:, :prefix_len, :] = prefix_embeds
+                
+            attention_mask = torch.ones((1, max_length), device=self.device)
+            all_timesteps = torch.linspace(self.steps - 1, 0, num_inference_steps).long().tolist()
+            
+            self_cond = None
+            for i, t_val in enumerate(all_timesteps):
+                t_tensor = torch.full((1,), t_val, device=self.device, dtype=torch.long)
+                x0_pred = self.model.diffusion_forward(
+                    x_t=x_t,
+                    t=t_tensor,
+                    attention_mask=attention_mask,
+                    self_cond=self_cond if self_conditioning else None
+                )
+                
+                if self_conditioning:
+                    self_cond = x0_pred
+                
+                alpha_t = self.alphas_cumprod[t_val]
+                if i + 1 < len(all_timesteps):
+                    alpha_t_prev = self.alphas_cumprod[all_timesteps[i+1]]
+                else:
+                    alpha_t_prev = torch.tensor(1.0, device=self.device)
+
+                eps = (x_t - torch.sqrt(alpha_t) * x0_pred) / torch.sqrt(torch.clamp(1 - alpha_t, min=1e-8))
+                x_t = torch.sqrt(alpha_t_prev) * x0_pred + torch.sqrt(torch.clamp(1 - alpha_t_prev, min=1e-8)) * eps
+                
+                if prefix_len > 0:
+                    x_t[:, :prefix_len, :] = prefix_embeds
+
+            logits = torch.matmul(x0_pred, embedding_matrix.t())
+            logits = logits / (latent_dim ** 0.5)
+            
+            if temperature > 0:
+                probs = torch.softmax(logits / temperature, dim=-1)
+                generated_ids = torch.multinomial(probs[0], num_samples=1).squeeze(-1)
+            else:
+                generated_ids = torch.argmax(logits[0], dim=-1)
+            
+            if prefix_len > 0:
+                generated_ids[:prefix_len] = torch.tensor(prefix_ids, device=self.device)
+
+            return self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+    # --- Incarcare Model ---
+    checkpoint_path = f"/checkpoints/pilot_run_v1/{checkpoint_name}"
+    print(f"⚡ Loading Thunder from {checkpoint_path}...")
     
-    inputs = tokenizer(query, return_tensors="pt").to(model.device)
-    anchor_len = inputs.input_ids.shape[1]
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
     
-    # 3. Route and Schedule
-    route = router.route_query(query, forced_mode=mode)
-    gen_mode = route["mode"]
-    
-    steps = scheduler.calculate_steps(mode=gen_mode, anchor_len=anchor_len)
-    print(f"⚡ Thunder: Route determined - Mode: {gen_mode}, Steps: {steps}")
-    
-    # 4. Generate (Crystallization)
-    # For testing, we'll create a dummy initial noise based on a reasonable length
-    # In a real scenario, this would be embeddings from the prompt prefix
-    # Here we simplify to show the engine works
-    
-    prompt_embeds = model.get_input_embeddings()(inputs.input_ids)
-    
-    # Create initial noise field of target length
-    predicted_len = route.get("predicted_length", 128)
-    target_seq_len = anchor_len + predicted_len
-    initial_noise = torch.randn((1, target_seq_len, model.config.hidden_size), device=model.device, dtype=model.dtype)
-    
-    # Setup embeddings for generation
-    embeddings = model.get_input_embeddings().weight.detach()
-    
-    # We "join" the prompt embeds as conditioning or prefix
-    # Simplified: just run crystallization on the noise
-    _, token_ids = engine.generate(
-        shape=initial_noise.shape,
-        embedding_matrix=embeddings,
-        steps=steps,
-        prompt_embeds=prompt_embeds,
-        anchor_len=inputs.input_ids.shape[1],
-        max_new_tokens=predicted_len # Dynamic Canvas scaling
+    dlm_config = ScratchDLMConfig(
+        vocab_size=len(tokenizer),
+        max_seq_len=THUNDER_CONFIG["model"]["max_seq_len"],
+        embedding_dim=THUNDER_CONFIG["model"]["embedding_dim"],
+        latent_dim=THUNDER_CONFIG["model"]["latent_dim"],
+        num_layers=THUNDER_CONFIG["model"]["num_layers"],
+        num_attention_heads=THUNDER_CONFIG["model"]["num_attention_heads"],
+        ffn_hidden_size=THUNDER_CONFIG["model"]["ffn_hidden_size"],
     )
     
-    # Simple nearest-neighbor decoding is already done by engine.generate's final clamping if we want, 
-    # but test_inference.py tries to do it manually. Let's use the final_tokens from generate.
+    model = ThunderScratchDiffusionLM(dlm_config)
+    model_state = os.path.join(checkpoint_path, "model_state.pt")
+    model.load_state_dict(torch.load(model_state, map_location="cuda", weights_only=True))
+    model.to("cuda")
+    model.eval()
     
-    # 5. Decode
-    # The output latents are in the embedding space [B, L, D]
-    # We find the nearest token for each embedding vector
-    print("⚡ Thunder: Crystallization complete. Decoding latents...")
+    scheduler = ThunderNoiseScheduler()
+    sampler = DiffusionSampler(model, tokenizer, scheduler)
     
-    generated_ids = token_ids[0, anchor_len:]
+    print("\n" + "="*50)
+    print(f"RUNNING INFERENCE ON {checkpoint_name}")
+    print("="*50)
     
-    # Decode to text
-    response_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    
-    # Apply personality formatting
-    formatted = personality.apply_formatting(response_text)
-    print(f"\nFinal Response:\n{formatted}")
+    for prompt in prompts:
+        print(f"\nPROMPT: '{prompt}'")
+        for i in range(2):
+            completion = sampler.sample(
+                prefix_text=prompt, 
+                max_length=64, 
+                num_inference_steps=50,
+                temperature=0.8
+            )
+            print(f"  Result {i+1}: {completion}")
 
-if __name__ == "__main__":
-    test_query = "Explica-mi cum functioneaza difuzia paralela in Thunder."
-    run_test_inference(test_query, mode="fast")
+@app.local_entrypoint()
+def main(checkpoint: str = "checkpoint-1250"):
+    prompts = [
+        "The capital of Romania is",
+        "Thunder 1 is a new",
+        "In a world where",
+        "Scientific research shows",
+        "Cândva, în inima",
+        "Staticlabs is known for"
+    ]
+    run_interactive_test.remote(checkpoint, prompts)

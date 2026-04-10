@@ -13,7 +13,9 @@ Targetul real al proiectului trebuie inghetat asa:
 - `thinking` cu mai multe iteratii,
 - training in principal pe `A100 80GB`, folosind burst-uri scurte din credite gratuite.
 
-Thunder nu este inca pregatit pentru acest obiectiv. Repo-ul actual este o fundatie utila pentru experimente pe un backbone existent, dar nu este inca un stack complet pentru:
+Thunder este acum intr-o stare mai buna decat la auditul initial: are deja un schelet from-scratch, un packer de blocuri si un launcher de training. Totusi, nu este inca complet pregatit pentru run-ul final, pentru ca mai lipsesc datele reale si validarea in mediu ML complet.
+
+Repo-ul nu este inca un stack complet pentru:
 
 - model bidirectional antrenat de la zero,
 - pipeline de date verificat si versionat,
@@ -22,11 +24,14 @@ Thunder nu este inca pregatit pentru acest obiectiv. Repo-ul actual este o funda
 
 ## Ce exista deja
 
-- Adaptare la forward continuu pentru difuzie in [core/diffusion_model.py](../../core/diffusion_model.py).
+- Backbone from-scratch bidirectional in [core/scratch_dllm.py](../../core/scratch_dllm.py).
+- Loader configurabil pentru scratch vs legacy in [core/model_loader.py](../../core/model_loader.py).
+- Entry point de training from-scratch in [training/run_from_scratch.py](../../training/run_from_scratch.py).
+- Packer de blocuri fixe pentru Hugging Face datasets in [training/data_pipeline.py](../../training/data_pipeline.py).
 - Scheduler de zgomot si obiective dedicate in [training/noise_scheduler.py](../../training/noise_scheduler.py) si [training/loss_functions.py](../../training/loss_functions.py).
 - Motor de inferenta cu dynamic canvas pentru generare in [core/diffusion_engine.py](../../core/diffusion_engine.py).
 - Baza pentru dynamic batching in [core/dynamic_batching.py](../../core/dynamic_batching.py).
-- Mix de dataset-uri si normalizare de scheme in [training/data_pipeline.py](../../training/data_pipeline.py).
+- Plan de amestec Hugging Face in [hf_dataset_plan.md](./hf_dataset_plan.md).
 
 ## Ce taiem acum ca sa nu ne risipim
 
@@ -42,16 +47,16 @@ Pentru acest proiect, urmatoarele directii sunt redundante sau premature:
 
 | Arie | Status | Observatie |
 | --- | --- | --- |
-| Training from scratch 0.8B-1B | Lipseste | Configul curent porneste din `Qwen/Qwen3.5-9B` si adauga LoRA; asta este adaptare pe model pre-antrenat, nu training de la zero. |
-| Bidirectional / fara masca cauzala | Partial | Exista `is_causal=False`, `use_cache=False` si masca plina de `1`, dar nu exista teste de atentie care sa demonstreze ca fiecare strat ruleaza complet bidirectional. |
+| Training from scratch 0.8B-1B | In progres | Exista acum backbone-ul nou, loader-ul nou si entrypoint-ul nou, dar nu avem inca un run ML real executat cap-coada pe date reale. |
+| Bidirectional / fara masca cauzala | In progres | Backbone-ul nou foloseste atentie non-cauzala si are test dedicat, dar lipseste validarea empirica pe run real. |
 | Dynamic canvas | Partial | Exista la inferenta prin `max_new_tokens`; pentru targetul de `2048` este util, dar nu trebuie sa complice trainerul inainte sa avem packing si curriculum stabile. |
-| Procesare text in blocuri paralele | Partial | Configul spune `packing=True`, dar pipeline-ul actual tokenizeaza exemplu-cu-exemplu si nu face packer real pe blocuri lungi, bucketizare de lungimi sau sharding paralel pentru trainer. |
+| Procesare text in blocuri paralele | In progres | Exista acum block packer pentru ferestre fixe de `2048`, dar nu avem inca pre-tokenizare offline, sharding si streaming la scara mare. |
 | Compresie | Lipseste | Nu exista compresie pentru shard-uri de date, compresie latenta, activation compression sau optimizer-state sharding. |
 | Integritate dataset-uri | Lipseste | `data/` nu contine corpusuri reale, nu exista manifest local cu checksum-uri, licente, schema si deduplicare. |
-| Training distribuit | Lipseste | Nu exista entrypoint pentru `torchrun`, FSDP/ZeRO, Ray Train, DeepSpeed sau configuratii multi-node. |
-| Resume / checkpoint complet | Partial | Checkpoint-urile salveaza acum si stare de optimizer/scheduler, dar nu exista inca un launcher distribuit care sa refaca automat tot contextul de rulare. |
+| Training distribuit | In progres | Exista launcher generic `torchrun`, dar nu exista inca orchestration multi-node complet si configuratii FSDP/ZeRO. |
+| Resume / checkpoint complet | Partial | Checkpoint-urile salveaza stare utila, dar mai lipsesc RNG state, sampler state si exercitii reale de resume pe cluster. |
 | Monitorizare | Partial | Exista acum `metrics.jsonl` si script de status, dar lipsesc dashboard-uri GPU/system metrics, evaluari automate periodice si alerte. |
-| Teste de consistenta | Partial | Exista teste de sintaxa, dar mai sunt fisiere care refera module inexistente sau API-uri invechite. |
+| Teste de consistenta | In progres | Referintele vechi au fost curatate, iar testele locale pot rula in mod `skip` daca lipseste `torch` din Python-ul curent. |
 
 ## Concluzii tehnice pe cerintele tale
 
@@ -80,7 +85,7 @@ Directia este corecta, dar validarea lipseste. Avem nevoie de:
 
 - test care verifica explicit matricea de atentie fara triunghi superior mascat,
 - audit pe RoPE/pozitionare pentru efecte ramase din regimul autoregresiv,
-- un backbone gandit de la inceput pentru bidirectional diffusion, nu doar "decoder cu `is_causal=False`".
+- validare pe run real a backbone-ului nou, nu doar teste statice.
 
 ### 4. Compresie si alte imbunatatiri noi
 
@@ -100,7 +105,7 @@ Imbunatatiri recomandate:
 - Trainerul era configurat inconsistent si nu salva stare completa de resume; a fost corectat in [training/diffusion_lm_trainer.py](../../training/diffusion_lm_trainer.py).
 - `core/dynamic_batching.py` avea importuri lipsa; au fost adaugate.
 - `TimestepEmbedder` folosea cheia gresita pentru numarul de pasi de difuzie; a fost corectata in [core/diffusion_model.py](../../core/diffusion_model.py).
-- Exista referinte vechi catre module care nu mai exista sau nu sunt in repo, mai ales in unele teste si fisiere de documentare.
+- Exista referinte vechi catre module care nu mai exista sau nu sunt in repo; cele mai vizibile au fost eliminate sau inlocuite.
 
 ## Ce trebuie sa existe inainte de primul training serios
 
@@ -119,3 +124,4 @@ Imbunatatiri recomandate:
 - [scripts/verify_dataset_integrity.py](../../scripts/verify_dataset_integrity.py)
 - [scripts/report_training_status.py](../../scripts/report_training_status.py)
 - [scripts/preflight_dllm.sh](../../scripts/preflight_dllm.sh)
+- [training/run_from_scratch.py](../../training/run_from_scratch.py)

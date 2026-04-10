@@ -132,13 +132,12 @@ class ThunderDiffusionEngine:
              shape = (batch_size, total_len, hidden_size)
              print(f"⚡ Thunder: Dynamic Canvas initialized to {total_len} tokens ({anchor_len} prompt + {max_new_tokens} output)")
 
-        # Dynamic Steps Logic (Paper Section C: Downsampling)
-        # We scale steps between 10 (simple) and 100 (complex) depending on the prompt length
-        max_dynamic_steps = 100
-        min_dynamic_steps = 10
+        # Dynamic Steps Logic aligned with the current 4090-friendly inference target.
+        max_dynamic_steps = THUNDER_CONFIG["logic"]["max_steps"]
+        min_dynamic_steps = THUNDER_CONFIG["logic"]["min_steps"]
         if steps is None:
             # Heuristic: More context = harder diffusion problem, need more steps
-            complexity_factor = min(1.0, anchor_len / 512.0) # Assume 512 is "max" complexity for this heuristic
+            complexity_factor = min(1.0, anchor_len / 2048.0)
             steps = int(min_dynamic_steps + (max_dynamic_steps - min_dynamic_steps) * complexity_factor)
             
         print(f"⚡ Thunder PrefixLM: Generating (Dynamic Steps: {steps}, CFG: {guidance_scale}, EarlyStop: {early_stopping_patience}, Grounded: True)...")
@@ -256,7 +255,7 @@ class ThunderDiffusionEngine:
                 
         # Final clamping to get the discrete tokens if not already done
         if final_tokens is None: # This case should ideally not happen if current_token_ids is always set
-            _, final_tokens = self.clamp_to_vocabulary(current_state, embedding_matrix, logit_scale=logit_scale)
+            _, final_tokens, _ = self.clamp_to_vocabulary(current_state, embedding_matrix, logit_scale=logit_scale)
             
         if return_trajectory:
             return current_state, final_tokens, trajectory

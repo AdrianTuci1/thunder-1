@@ -263,6 +263,7 @@ Modifica:
 3. Pilot 150M-300M.
 4. Blueprint model 0.85B.
 5. Launcher distribuit: [scripts/launch_train_torchrun.sh](../../scripts/launch_train_torchrun.sh).
+   Entry point actual: [training/run_from_scratch.py](../../training/run_from_scratch.py)
 6. Metrics + checkpointing + resume.
 7. Micro-run pe A100.
 8. Run final 0.85B-1B.
