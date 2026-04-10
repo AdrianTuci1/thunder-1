@@ -1,21 +1,64 @@
-⚡ Thunder
-Thunder is a high-performance inference framework developed by Static Labs. It is designed to transform traditional unidirectional language models into Hierarchical Parallel Diffusion engines.
+⚡ Thunder | From-Scratch Bidirectional Diffusion-LM (dLLM)
+============================================================
 
-By bypassing the "causal bottleneck" of standard autoregressive generation, Thunder enables global text crystallization across a 120k+ token context window at unprecedented speeds of 700 – 1200 t/s.
+Thunder is a high-performance research implementation of a **Bidirectional Diffusion Transformer**, engineered from the ground up for massive throughput and complex sequence generation. By treating text generation as a parallel crystallization process rather than a token-by-token sequence, Thunder shatters the latency barriers of traditional LLMs.
 
-🌌 The Core Innovation: Parallel Denoising
-Traditional models generate text token-by-token (linearly). Thunder treats the entire output space as a cold-start noise field. Utilizing Phi-4 as its latent backbone, the system reconstructs the entire context simultaneously through iterative refinement.
+### 📄 [Technical Deep Dive (Paper.md)](file:///Users/adriantucicovenco/Proiecte/thunder/paper.md)
 
-Bidirectional Convergence: Unlike GPT-style models, Thunder allows future tokens to influence past tokens during the denoising phase, resulting in superior global coherence.
+---
 
-Fractal Tiling: A three-tier segmentation strategy (Macro: 120k, Meso: 16k, Micro: 2k) that allows for asynchronous GPU execution.
+## 🚀 Technical Specifications
 
-Asynchronous CUDA Streams: Every micro-tile is processed on a dedicated CUDA stream, saturating the RTX 4090's Tensor cores.
+| Feature | Specification |
+| :--- | :--- |
+| **Parameter Count** | ~817 Million (1B Architecture) |
+| **Context Window** | 2048 Tokens (RoPE Scalable to 16k) |
+| **Architecture** | Bidirectional Diffusion Transformer |
+| **Positioning** | Rotary Positional Embeddings (RoPE) |
+| **Optimization** | FlashAttention-2 & SwiGLU |
+| **Data Mix** | FineWeb-Edu, Cosmopedia-v2, OpenWebMath, CodeParrot |
 
-Phase 1: Stable 16k diffusion on Phi-4 (Current).
+---
 
-Phase 2: Implementation of Fractal Tiling for 120k context expansion.
+## 🧠 Core Architecture: Parallel Crystallization
 
-Phase 3: Scale-to-30B: Merging the Thunder framework with larger parameter models to achieve "Expert-Level" reasoning at local-inference speeds.
+Traditional LLMs are limited by sequential bottlenecks. Thunder treats the entire output space as a continuous latent field. 
 
-© 2026 Static Labs. Bending reality.
+*   **Non-Causal Transformer**: Every token attends to every other token, allowing the model to "think" globally across the entire context window.
+*   **Latent Bridge**: Operates in a compressed latent space (1280 dim) while maintaining fidelity through high-dimensional token embeddings (1536 dim).
+*   **Mercury-Style Budgets**: Multi-mode inference supporting:
+    *   **Fast**: 5-10 denoising steps (Instant generation).
+    *   **Thinking**: 25-50 steps (High coherence / Reasoning).
+
+---
+
+## 🛠️ Infrastructure & MLOps
+
+Thunder is designed for hybrid scale: from **RTX 4090** local inference to **Multi-GPU A100/L40S** cloud training.
+
+### dLLM Training Readiness Kit
+<details>
+<summary><b>📂 Configuration & Blueprints</b></summary>
+
+- [blueprint.json](file:///Users/adriantucicovenco/Proiecte/thunder/configs/dllm_1b_blueprint.json) - Core model specification.
+- [config_manager.py](file:///Users/adriantucicovenco/Proiecte/thunder/core/config_manager.py) - Training & Pipeline orchestration.
+</details>
+
+<details>
+<summary><b>📂 Dataset & Integrity Scripts</b></summary>
+
+- [verify_dataset.py](file:///Users/adriantucicovenco/Proiecte/thunder/scripts/verify_dataset_integrity.py) - Data quality validation.
+- [verify_hf_sources.py](file:///Users/adriantucicovenco/Proiecte/thunder/scripts/verify_hf_dataset_sources.py) - Hub connectivity audit.
+</details>
+
+<details>
+<summary><b>📂 Deployment & Training</b></summary>
+
+- [launch_torchrun.sh](file:///Users/adriantucicovenco/Proiecte/thunder/scripts/launch_train_torchrun.sh) - Cluster initialization.
+- [modal_train.py](file:///Users/adriantucicovenco/Proiecte/thunder/scripts/modal_train.py) - Serverless GPU training entrypoint.
+- [run_from_scratch.py](file:///Users/adriantucicovenco/Proiecte/thunder/training/run_from_scratch.py) - Core training loop.
+</details>
+
+---
+
+© 2026 [staticlabs.ro](https://staticlabs.ro). **Breaking the sequential barrier.**

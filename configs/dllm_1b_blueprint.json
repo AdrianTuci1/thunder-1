@@ -1,0 +1,101 @@
+{
+  "metadata": {
+    "name": "thunder-dllm-1b-blueprint",
+    "updated_at": "2026-04-09",
+    "purpose": "Reference blueprint for a from-scratch bidirectional diffusion language model optimized for 2048 context and RTX 4090 inference."
+  },
+  "model": {
+    "from_scratch": true,
+    "family": "bidirectional_diffusion_transformer",
+    "target_params": 840000000,
+    "vocab_size": 49152,
+    "embedding_dim": 1536,
+    "latent_dim": 1280,
+    "num_layers": 28,
+    "num_attention_heads": 20,
+    "ffn_hidden_size": 5120,
+    "max_seq_len": 2048,
+    "causal_mask": false,
+    "bidirectional_attention": true,
+    "self_conditioning": true,
+    "use_rope": true,
+    "rope_theta": 100000.0,
+    "x0_parameterization": true,
+    "timestep_embedding": true,
+    "tie_input_output_embeddings": true,
+    "inference_profiles": {
+      "fast_steps": 8,
+      "thinking_steps": 24,
+      "target_gpu": "RTX 4090 24GB"
+    },
+    "latent_bridge": {
+      "enabled": true,
+      "type": "linear_ln_linear",
+      "compression_ratio": 1.2
+    },
+    "tokenizer_name": "HuggingFaceTB/SmolLM2-135M"
+  },
+  "data": {
+    "manifest_path": "data/manifests/dllm_corpus_manifest.local.json",
+    "parallel_block_processing": true,
+    "block_size": 2048,
+    "curriculum_lengths": [
+      256,
+      512,
+      1024,
+      2048
+    ],
+    "required_checksums": true,
+    "required_license_registry": true,
+    "deduplication": true,
+    "preferred_compression": "zstd",
+    "fallback_compression": "gzip"
+  },
+  "training": {
+    "precision": "bf16",
+    "optimizer": "adamw",
+    "learning_rate": 0.0003,
+    "warmup_steps": 2000,
+    "gradient_checkpointing": true,
+    "dynamic_canvas_training": true,
+    "packed_parallel_blocks": true,
+    "teacher_student_distillation": {
+      "enabled": true,
+      "teacher_steps": 32,
+      "student_fast_steps": 8,
+      "student_thinking_steps": 24
+    },
+    "checkpoint_contents": [
+      "model",
+      "optimizer",
+      "scheduler",
+      "rng",
+      "sampler",
+      "metrics"
+    ],
+    "monitoring": [
+      "metrics.jsonl",
+      "gpu_metrics",
+      "sample_reconstructions",
+      "checkpoint_inventory"
+    ]
+  },
+  "hardware_profiles": {
+    "pilot_train": {
+      "gpus": "1x A100 80GB",
+      "target": "150M-300M syntax and stability validation"
+    },
+    "preproduction_train": {
+      "gpus": "4x A100 80GB",
+      "target": "400M-600M validation before final scale-up"
+    },
+    "final_train": {
+      "gpus": "8x A100 80GB",
+      "target": "preferred cluster shape for ~0.85B-1B parameters"
+    },
+    "local_inference": {
+      "gpus": "1x RTX 4090 24GB",
+      "target": "fast and thinking inference after distillation"
+    }
+  }
+}

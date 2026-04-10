@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "created_at": "2026-04-09",
+  "notes": "Copy this file to dllm_corpus_manifest.local.json and replace placeholders with real shard metadata.",
+  "datasets": [
+    {
+      "name": "general_corpus_train",
+      "path": "data/raw/general_corpus/train.jsonl",
+      "format": "jsonl",
+      "compression": "none",
+      "sha256": "REPLACE_ME",
+      "min_bytes": 1048576,
+      "license": "REPLACE_ME",
+      "schema": {
+        "required_keys": [
+          "text"
+        ]
+      },
+      "sample_records": 10
+    },
+    {
+      "name": "reasoning_corpus_train",
+      "path": "data/raw/reasoning_corpus/train.jsonl.gz",
+      "format": "jsonl",
+      "compression": "gzip",
+      "sha256": "REPLACE_ME",
+      "min_bytes": 1048576,
+      "license": "REPLACE_ME",
+      "schema": {
+        "required_keys": [
+          "prompt",
+          "response"
+        ]
+      },
+      "sample_records": 10
+    }
+  ]
+}

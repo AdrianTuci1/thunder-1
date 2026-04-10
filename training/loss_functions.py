@@ -1,62 +1,84 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from core.config_manager import THUNDER_CONFIG
 
-class HybridLoss:
+class DiffusionLMLoss:
     """
-    Standard Denoising Loss (MSE) with SNR weighting across the full sequence,
-    combined with a Semantic Anchor Loss to preserve pre-trained intelligence.
+    Loss functions for continuous Diffusion-LM with x0-parametrization.
     """
     
-    def __init__(self, anchor_weight=0.1):
-        self.anchor_weight = anchor_weight
+    def __init__(self, t_round_penalty=0.01):
+        self.t_round_penalty = t_round_penalty
 
-    def calculate_loss(self, predicted_noise, target_noise, predicted_x0=None, anchor_x0=None, timesteps=None):
+    def calculate_denoising_diffusion_loss(self, x0_pred, target_token_ids, embedding_weight, t_indices, alphas_cumprod, attention_mask=None, logit_scale=1.0):
         """
-        Computes the total training loss (MSE + Semantic Anchor).
-        predicted_noise: [B, L, D] (Predicted epsilon)
-        target_noise: [B, L, D] (True epsilon)
-        predicted_x0: [B, L, D] (Optional, predicted clean embeddings for anchor loss)
-        anchor_x0: [B, L, D] (Optional, original clean embeddings from Llama)
-        timesteps: [B] tensor of diffusion steps (normalized or raw)
+        Mercury 1 Adaptation: Denoising Diffusion Loss
+        -E_t [ gamma(t) * E_{z_t ~ q} log p_theta(x | z_t) ]
+        This computes the token-level cross-entropy loss directly from the predicted continuous x0.
         """
-        # 1. Standard Denoising Loss (MSE on noise)
-        mse_loss_raw = F.mse_loss(predicted_noise, target_noise, reduction='none')
+        batch_size, seq_len, hidden_size = x0_pred.shape
         
-        if timesteps is not None:
-            # SNR weighting: encourages precision in later steps (low noise)
-            snr_weights = self._calculate_snr_weights(timesteps)
-            snr_weights = snr_weights.view(-1, 1, 1).to(predicted_noise.device)
-            denoising_loss = (mse_loss_raw * snr_weights).mean()
+        # Map predicted continuous states to vocabulary probabilities
+        logits = torch.matmul(x0_pred, embedding_weight.t())
+        
+        # Apply scaling for softmax stability during early diffusion steps
+        if logit_scale != 1.0:
+            logits = logits / logit_scale
+            
+        logits = logits.reshape(-1, logits.size(-1))
+        targets = target_token_ids.reshape(-1)
+        
+        if attention_mask is not None:
+            targets_masked = targets.clone()
+            mask_flat = attention_mask.reshape(-1)
+            targets_masked[mask_flat == 0] = -100
+            
+            # Loss per position
+            ce_loss_raw = F.cross_entropy(logits, targets_masked, ignore_index=-100, reduction='none')
+            ce_loss_matrix = ce_loss_raw.reshape(batch_size, seq_len)
+            
+            # For gamma(t), Mercury uses a time-dependent weighting, but uniform or simplified SNR
+            # weights can be applied. We start with uniform scaled by attention_mask.
+            ce_loss = (ce_loss_matrix * attention_mask).sum() / (attention_mask.sum() + 1e-6)
         else:
-            denoising_loss = mse_loss_raw.mean()
+            ce_loss = F.cross_entropy(logits, targets, reduction='mean')
             
-        # 2. Semantic Anchor Loss
-        # Prevents the diffusion bridge from creating a latent space disconnected from Llama's native intelligence.
-        anchor_loss = 0.0
-        if predicted_x0 is not None and anchor_x0 is not None:
-            # We use Cosine Embedding Loss as it's scale-invariant and focuses on direction (semantic meaning)
-            # 1.0 means we want the vectors to be aligned
-            target = torch.ones(predicted_x0.shape[0] * predicted_x0.shape[1]).to(predicted_x0.device)
-            # Flatten to [B*L, D] for cosine matching
-            p_x0_flat = predicted_x0.view(-1, predicted_x0.shape[-1])
-            a_x0_flat = anchor_x0.view(-1, anchor_x0.shape[-1])
-            
-            anchor_loss = F.cosine_embedding_loss(p_x0_flat, a_x0_flat, target)
-            
-        total_loss = denoising_loss + (self.anchor_weight * anchor_loss)
-            
-        return total_loss, denoising_loss, anchor_loss
+        return ce_loss
 
-    def _calculate_snr_weights(self, t, max_snr=5.0):
+    def calculate_xt_regularization(self, x0_target, alpha_bar_T, attention_mask=None):
         """
-        Time-Weighted Denoising (SNR weighting).
-        t: [B] tensor of diffusion timesteps normalized to [0, 1].
-        High t = High Noise = Low SNR.
-        Low t = Low Noise = High SNR.
+        Regularization term from Equation 1219/1293: ||sqrt(alpha_bar_T) * x0||^2
         """
-        # Heuristic SNR weight: Higher weight for smaller t (cleaner data)
-        # This forces the model to be precise about grammar and details.
-        # Formula: snr = (1 - t) / (t + 1e-4) -> clipped to [1, max_snr]
-        snr = (1.0 - t) / (t + 1e-4)
-        return torch.clamp(snr, min=1.0, max=max_snr)
+        if attention_mask is not None:
+            norm_sq = torch.norm(x0_target, dim=-1)**2
+            reg = torch.abs(alpha_bar_T) * (norm_sq * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+        else:
+            reg = torch.abs(alpha_bar_T) * torch.mean(torch.norm(x0_target, dim=-1)**2)
+        return reg
+
+    def calculate_total_loss(self, x0_pred, x0_target, input_ids, embedding_weight, t_indices, alphas_cumprod, attention_mask=None, round_threshold=0.15, logit_scale=1.0):
+        """
+        Calculates the complete masked loss for a training step using Mercury 1 objectives.
+        """
+        # 1. Main Diffusion Loss (Denoising Diffusion Loss on Cross Entropy for all t)
+        denoising_loss = self.calculate_denoising_diffusion_loss(
+            x0_pred=x0_pred, 
+            target_token_ids=input_ids, 
+            embedding_weight=embedding_weight, 
+            t_indices=t_indices, 
+            alphas_cumprod=alphas_cumprod, 
+            attention_mask=attention_mask, 
+            logit_scale=logit_scale
+        )
+        
+        # 2. xT Regularization (t = T)
+        alpha_bar_T = alphas_cumprod[-1]
+        xt_reg = self.calculate_xt_regularization(x0_target, alpha_bar_T, attention_mask=attention_mask)
+        
+        # L_round_loss is now fully absorbed by Denoising Diffusion Loss across all timesteps
+        l_round_loss = torch.tensor(0.0, device=x0_pred.device, dtype=x0_pred.dtype)
+        
+        # Combined Loss
+        total_loss = denoising_loss + xt_reg
+            
+        return total_loss, denoising_loss, l_round_loss
