@@ -9,18 +9,20 @@ class ThunderNoiseScheduler:
     different refinement steps.
     """
     
-    def __init__(self, num_train_timesteps=None, schedule_type=None):
-        self.num_train_timesteps = num_train_timesteps or THUNDER_CONFIG["training"]["num_train_timesteps"]
-        self.schedule_type = schedule_type or THUNDER_CONFIG["training"].get("noise_schedule_type", "linear")
+    def __init__(self, diffusion_steps=None, schedule_type=None):
+        self.diffusion_steps = diffusion_steps or THUNDER_CONFIG["diffusion"]["steps"]
+        self.schedule_type = schedule_type or THUNDER_CONFIG["diffusion"].get("schedule", "linear")
         
         if self.schedule_type == "linear":
-            self.betas = torch.linspace(1e-4, 0.012, self.num_train_timesteps)
+            self.betas = torch.linspace(1e-4, 0.02, self.diffusion_steps)
             self.alphas = 1.0 - self.betas
             self.alphas_cumprod = torch.cumprod(self.alphas, axis=0)
         elif self.schedule_type == "cosine":
-            self.alphas_cumprod = self._cosine_schedule(self.num_train_timesteps)
+            self.alphas_cumprod = self._cosine_schedule(self.diffusion_steps)
+        elif self.schedule_type == "sqrt":
+            self.alphas_cumprod = self._sqrt_schedule(self.diffusion_steps)
         elif self.schedule_type == "sigmoid":
-            self.alphas_cumprod = self._sigmoid_schedule(self.num_train_timesteps)
+            self.alphas_cumprod = self._sigmoid_schedule(self.diffusion_steps)
         else:
             raise ValueError(f"Unknown noise schedule type: {self.schedule_type}")
 
@@ -33,6 +35,17 @@ class ThunderNoiseScheduler:
         alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
         alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
         return alphas_cumprod[1:]
+
+    def _sqrt_schedule(self, timesteps, s=1e-4):
+        """
+        Square-root noise schedule from Diffusion-LM (Appendix A).
+        1 - alphas_cumprod = sqrt(t/T + s)
+        """
+        t = torch.linspace(0, timesteps, timesteps)
+        # 1 - alphas_cumprod = sqrt(t/T + s)
+        # So alphas_cumprod = 1 - sqrt(t/T + s)
+        alphas_cumprod = 1.0 - torch.sqrt(t / timesteps + s)
+        return alphas_cumprod
 
     def _sigmoid_schedule(self, timesteps, start=-5, end=5, tau=1.1):
         """

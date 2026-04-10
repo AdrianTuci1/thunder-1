@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+thunder_prefixlm_llama/
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.json
+!configs/dllm_1b_blueprint.json
+!data/manifests/dllm_corpus_manifest.example.json
+.ipynb_checkpoints/
+.DS_Store
+unsloth_compiled_cache/
