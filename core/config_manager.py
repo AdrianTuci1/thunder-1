@@ -24,7 +24,7 @@ THUNDER_CONFIG = {
         "embedding_dim": 1536,           # Token space used for clamping and logits.
         "latent_dim": 1280,              # Compressed denoising space for cheaper diffusion steps.
         "ffn_hidden_size": 5120,
-        "num_layers": 28,
+        "num_layers": 32,
         "num_attention_heads": 20,
         "num_kv_heads": 5,             # GQA: 4:1 ratio
         "dropout": 0.0,
@@ -63,21 +63,21 @@ THUNDER_CONFIG = {
         "schedule": "sigmoid",
         "cfg_drop_rate": 0.10,
         "teacher_steps": 32,
-        "fast_steps": 8,
-        "thinking_steps": 24,
+        "fast_steps": 5,
+        "thinking_steps": 16,
     },
 
     # ------------------------------------------------------------------
     # 5. TRAINING
     # ------------------------------------------------------------------
     "training": {
-        "learning_rate": 2e-4,
+        "learning_rate": 1.8e-4,       # Adjusted for 0.85B stability
         "weight_decay": 0.1,
         "warmup_steps": 2000,
         "curriculum_stage_steps": 2500,
         "epochs": 1,
-        "max_steps": 250000,           # Full Chinchilla target
-        "output_dir": "./runs/thunder_v1_8k_production",
+        "max_steps": 50000,           # Optimized for 50h on 2x A100
+        "output_dir": "./runs/thunder_v1_850M_production",
         "save_steps": 500,
         "logging_steps": 1,
         "preview_steps": 100,
@@ -191,16 +191,16 @@ THUNDER_CONFIG = {
     "logic": {
         "internal_threshold": 0.5,
         "modes": {
-            "instant": {"base": 3, "max": 8},
-            "fast": {"base": 8, "max": 15},
-            "thinking": {"base": 24, "max": 32},
+            "instant": {"base": 2, "max": 5},
+            "fast": {"base": 3, "max": 8},
+            "thinking": {"base": 8, "max": 24},
         },
         "scaling": {
             "length_weight": 0.2,
         },
-        "default_steps": 8,
-        "min_steps": 5,
-        "max_steps": 32,
+        "default_steps": 5,
+        "min_steps": 3,
+        "max_steps": 24,
     },
 
     # ------------------------------------------------------------------
@@ -210,5 +210,17 @@ THUNDER_CONFIG = {
         "host": "0.0.0.0",
         "port": 8000,
         "api_token": "thunder-secret-at-2026",
+    },
+    # ------------------------------------------------------------------
+    # 9. STORAGE (R2 / S3)
+    # ------------------------------------------------------------------
+    "storage": {
+        "enabled": False,              # Toggle for object storage syncing
+        "provider": "r2",
+        "bucket": "thunder-checkpoints",
+        "endpoint_url": "https://<account_id>.r2.cloudflarestorage.com",
+        "region": "auto",
+        "access_key_id": None,         # Suggestion: Use THUNDER_R2_ACCESS_KEY env var
+        "secret_access_key": None,     # Suggestion: Use THUNDER_R2_SECRET_KEY env var
     },
 }

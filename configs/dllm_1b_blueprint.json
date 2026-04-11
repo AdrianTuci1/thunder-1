@@ -14,18 +14,18 @@
     "num_layers": 28,
     "num_attention_heads": 20,
     "ffn_hidden_size": 5120,
-    "max_seq_len": 2048,
+    "max_seq_len": 8192,
     "causal_mask": false,
     "bidirectional_attention": true,
     "self_conditioning": true,
     "use_rope": true,
-    "rope_theta": 100000.0,
+    "rope_theta": 500000.0,
     "x0_parameterization": true,
     "timestep_embedding": true,
     "tie_input_output_embeddings": true,
     "inference_profiles": {
-      "fast_steps": 8,
-      "thinking_steps": 24,
+      "fast_steps": 5,
+      "thinking_steps": 16,
       "target_gpu": "RTX 4090 24GB"
     },
     "latent_bridge": {
@@ -38,12 +38,12 @@
   "data": {
     "manifest_path": "data/manifests/dllm_corpus_manifest.local.json",
     "parallel_block_processing": true,
-    "block_size": 2048,
+    "block_size": 8192,
     "curriculum_lengths": [
-      256,
-      512,
       1024,
-      2048
+      2048,
+      4096,
+      8192
     ],
     "required_checksums": true,
     "required_license_registry": true,

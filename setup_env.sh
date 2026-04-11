@@ -11,6 +11,6 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-build-isolation --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
-pip install fastapi uvicorn websockets
+pip install fastapi uvicorn websockets boto3
 
 echo "Environment initialization complete. ✅ Thunder Ready (Isolated)."

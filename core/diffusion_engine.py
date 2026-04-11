@@ -137,7 +137,8 @@ class ThunderDiffusionEngine:
         min_dynamic_steps = THUNDER_CONFIG["logic"]["min_steps"]
         if steps is None:
             # Heuristic: More context = harder diffusion problem, need more steps
-            complexity_factor = min(1.0, anchor_len / 2048.0)
+            # Scaled to the new 8192 context target
+            complexity_factor = min(1.0, anchor_len / 8192.0)
             steps = int(min_dynamic_steps + (max_dynamic_steps - min_dynamic_steps) * complexity_factor)
             
         print(f"⚡ Thunder PrefixLM: Generating (Dynamic Steps: {steps}, CFG: {guidance_scale}, EarlyStop: {early_stopping_patience}, Grounded: True)...")

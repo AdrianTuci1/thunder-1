@@ -1,3 +1,16 @@
+# ⚡ Thunder Evolution Log
+
+## [2026-04-11] Context Expansion & Fast Distillation
+- **Context 8k**: Fereastra de context a fost extinsă de la 2048 la 8192 de tokeni.
+- **RoPE Scaling**: `rope_theta` ajustat la 500k pentru a menține stabilitatea pe secvențe lungi.
+- **Inference Steps**: Optimizarea intervalelor de "cristalizare":
+    - FAST: 3-8 pași (scădere de la 10-15).
+    - THINKING: 8-24 pași (scădere de la 30-50).
+- **Distillation Core**: Implementarea `ThunderDistillationTrainer` în `training/distillation_trainer.py`. Aceasta permite antrenarea unui "Student" ultra-rapid (3-8 pași) prin imitarea unui "Teacher" precis (32+ pași).
+- **Complexity Scaling**: Algoritmul de pași dinamici se raportează acum la baza de 8192.
+
+---
+
 # ⚡ Thunder 1: Roadmap Strategic (Bilingv & Aliniat)
 
 Acest document descrie evoluția Thunder 1 de la un pilot experimental la un asistent bilingv (Română/Engleză) optimizat pentru interfețe moderne precum OpenWebUI.

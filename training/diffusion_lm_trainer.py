@@ -23,6 +23,7 @@ from training.noise_scheduler import ThunderNoiseScheduler
 from training.loss_functions import DiffusionLMLoss
 from core.model_loader import ThunderModelLoader
 from training.data_pipeline import ThunderDataPipeline
+from core.storage import ObjectStorageManager
 
 class DiffusionLMTrainer:
     """
@@ -71,6 +72,9 @@ class DiffusionLMTrainer:
                     }
                 }
             )
+        
+        # Initialize storage manager for R2/S3 syncing
+        self.storage_manager = ObjectStorageManager(config)
 
     def train(self, dataset):
         batch_size = self.hardware_config.get("batch_size", 2)
@@ -223,6 +227,9 @@ class DiffusionLMTrainer:
         with open(os.path.join(ckpt_path, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
         print(f"💾 Checkpoint saved: {ckpt_path}")
+        
+        # Sync to Object Storage (R2/S3) if enabled
+        self.storage_manager.upload_checkpoint_async(ckpt_path)
 
     def _load_training_state(self, path, optimizer, lr_scheduler):
         print(f"🔄 Resuming from {path}...")
