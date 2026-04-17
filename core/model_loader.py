@@ -35,6 +35,9 @@ class ThunderModelLoader:
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        # Suppress warnings about sequence length during block packing
+        self.tokenizer.model_max_length = 100000
 
         import inspect
         sig = inspect.signature(ScratchDLMConfig)

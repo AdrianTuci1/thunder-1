@@ -29,7 +29,7 @@ Vom folosi o sesiune `screen` pentru stabilitate și `accelerate` pentru viteză
 ```bash
 screen -S thunder_run
 # Înăuntru tastează:
-python3 training/diffusion_lm_trainer.py
+accelerate launch training/diffusion_lm_trainer.py
 ```
 *   **Monitorizare Real-Time:** `nvtop` (într-o altă fereastră SSH) pentru GPU.
 *   **Monitorizare Cloud:** Verifică dashboard-ul tău pe [wandb.ai](https://wandb.ai).

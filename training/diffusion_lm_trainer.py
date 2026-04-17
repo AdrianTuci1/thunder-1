@@ -2,7 +2,12 @@ import os
 import sys
 import json
 import time
+import shutil
 from typing import Optional, Iterable, List
+from dotenv import load_dotenv
+
+# Load credentials from .env
+load_dotenv()
 
 import torch
 import torch.nn as nn
@@ -30,6 +35,11 @@ except ImportError:
 from core.model_loader import ThunderModelLoader
 from training.data_pipeline import ThunderDataPipeline
 from core.storage import ObjectStorageManager
+
+import datasets
+# Stabilize streaming for open-web-math and large mixes
+datasets.config.STREAMING_READ_MAX_RETRIES = 50
+datasets.config.HF_HUB_OFFLINE = False
 
 class DiffusionLMTrainer:
     """
@@ -81,6 +91,7 @@ class DiffusionLMTrainer:
         
         # Initialize storage manager for R2/S3 syncing
         self.storage_manager = ObjectStorageManager(config)
+        self.last_save_time = time.time()
 
     def train(self, dataset):
         batch_size = self.hardware_config.get("batch_size", 2)
@@ -92,8 +103,9 @@ class DiffusionLMTrainer:
             batch_size=batch_size, 
             shuffle=not is_iterable, 
             collate_fn=self._collate_fn,
-            num_workers=0,
-            pin_memory=True
+            num_workers=self.pipeline_config.get("num_proc", 4),
+            pin_memory=True,
+            persistent_workers=is_iterable and self.pipeline_config.get("num_proc", 4) > 0
         )
         
         optimizer = torch.optim.AdamW(
@@ -103,18 +115,44 @@ class DiffusionLMTrainer:
         )
         
         # Estimate training steps
+        grad_accum = self.hardware_config.get("grad_accum", 1)
         if is_iterable:
-            steps_per_epoch = self.training_config.get("max_train_blocks", 1000000) // batch_size
+            total_blocks = self.training_config.get("max_train_blocks", 1000000)
+            num_training_steps = (total_blocks // batch_size) // grad_accum
         else:
-            steps_per_epoch = len(dataloader)
+            num_training_steps = len(dataloader) // grad_accum
         
-        num_training_steps = epochs * steps_per_epoch
-        lr_scheduler = get_scheduler(
-            "cosine",
-            optimizer=optimizer,
-            num_warmup_steps=self.training_config.get("warmup_steps", 2000),
-            num_training_steps=num_training_steps
-        )
+        steps_per_epoch = num_training_steps
+        
+        # [NEW] Custom LR Scheduler: Warm-down (Constant followed by Exponential Decay)
+        lr_type = self.training_config.get("lr_schedule_type", "cosine")
+        if lr_type == "thunder_warmdown":
+            constant_steps = self.training_config.get("warmdown_constant_steps", 10000)
+            # Decădem lent până la 10% din LR-ul inițial
+            decay_steps = num_training_steps - (self.global_step + constant_steps)
+            
+            def lr_lambda(current_step):
+                # current_step here is the step relative to 0 if NOT resumed, 
+                # but we usually resume global_step as well.
+                # The scheduler.step() is called global_step times during training.
+                if current_step < (self.global_step + constant_steps):
+                    return 1.0
+                else:
+                    # Exponential decay: e^(-k * t)
+                    # We want to reach 0.1 at num_training_steps
+                    rel_step = current_step - (self.global_step + constant_steps)
+                    if decay_steps <= 0: return 1.0
+                    decay_rate = -torch.log(torch.tensor(0.1)) / decay_steps
+                    return torch.exp(-decay_rate * rel_step).item()
+            
+            lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        else:
+            lr_scheduler = get_scheduler(
+                lr_type,
+                optimizer=optimizer,
+                num_warmup_steps=self.training_config.get("warmup_steps", 2000),
+                num_training_steps=num_training_steps
+            )
 
         # Accelerator Prepare (Multi-GPU setup)
         self.model, optimizer, dataloader, lr_scheduler = self.accelerator.prepare(
@@ -135,12 +173,26 @@ class DiffusionLMTrainer:
             
             progress_bar = tqdm(
                 total=steps_per_epoch, 
+                initial=self.global_step,
                 desc="Training", 
                 disable=not self.accelerator.is_main_process
             )
             
             for step, batch in enumerate(dataloader):
-                if is_iterable and step >= steps_per_epoch:
+                # [NEW] Logical Resume: Skip batches already processed in previous run
+                if is_iterable and step < self.global_step:
+                    if step % 100 == 0 and self.accelerator.is_main_process:
+                        progress_bar.set_description(f"⏩ Resuming... Skipping to step {self.global_step}")
+                    continue
+                
+                if is_iterable and step == self.global_step and self.accelerator.is_main_process:
+                    progress_bar.set_description("Training")
+                    
+                if self.accelerator.is_main_process and step > self.global_step:
+                    progress_bar.update(1)
+
+                if is_iterable and self.global_step >= num_training_steps:
+                    break
                     break
                     
                 input_ids = batch["input_ids"]
@@ -148,86 +200,104 @@ class DiffusionLMTrainer:
                 input_ids, attention_mask = self._apply_length_curriculum(input_ids, attention_mask)
                 
                 with self.accelerator.accumulate(self.model):
-                    # 1. Forward Pass logic
-                    unwrapped = self.accelerator.unwrap_model(self.model)
-                    embedding_matrix = unwrapped.get_input_embeddings().weight
-                    clean_embeddings = unwrapped.get_input_embeddings()(input_ids)
-                    
-                    bsz = input_ids.shape[0]
-                    timesteps = torch.randint(0, self.noise_scheduler.diffusion_steps, (bsz,), device=self.device).long()
-                    noise = torch.randn_like(clean_embeddings)
-                    noisy_latents = self.noise_scheduler.add_noise(clean_embeddings, noise, timesteps)
-                    
-                    # CFG Training (Prompt Dropout)
-                    cfg_mask = attention_mask.clone()
-                    if torch.rand(1).item() < self.diffusion_config.get("cfg_drop_rate", 0.1):
-                        cfg_mask = torch.zeros_like(cfg_mask)
+                    with self.accelerator.autocast():
+                        # 1. Forward Pass logic
+                        unwrapped = self.accelerator.unwrap_model(self.model)
+                        embedding_matrix = unwrapped.get_input_embeddings().weight
+                        clean_embeddings = unwrapped.get_input_embeddings()(input_ids)
+                        
+                        bsz = input_ids.shape[0]
+                        
+                        # [NEW] Biased Noise Sampling
+                        if self.training_config.get("noise_sampling_mode") == "biased":
+                            range_min, range_max = self.training_config.get("noise_sampling_range", [20, 80])
+                            is_biased = torch.rand(bsz, device=self.device) < 0.7
+                            timesteps = torch.randint(0, self.noise_scheduler.diffusion_steps, (bsz,), device=self.device).long()
+                            biased_timesteps = torch.randint(range_min, range_max + 1, (bsz,), device=self.device).long()
+                            timesteps = torch.where(is_biased, biased_timesteps, timesteps)
+                        else:
+                            timesteps = torch.randint(0, self.noise_scheduler.diffusion_steps, (bsz,), device=self.device).long()
+                        noise = torch.randn_like(clean_embeddings)
+                        noisy_latents = self.noise_scheduler.add_noise(clean_embeddings, noise, timesteps)
+                        
+                        # CFG Training (Prompt Dropout)
+                        cfg_mask = attention_mask.clone()
+                        if torch.rand(1).item() < self.diffusion_config.get("cfg_drop_rate", 0.1):
+                            cfg_mask = torch.zeros_like(cfg_mask)
 
-                    # Self-Conditioning (Pass 1)
-                    self_cond = None
-                    if self.training_config.get("self_conditioning", True) and torch.rand(1).item() < 0.5:
-                        with torch.no_grad():
-                            if HAS_TE and self.training_config.get("use_fp8", False):
-                                import transformer_engine.pytorch as te
-                                from transformer_engine.common.recipe import Format, DelayedScaling
-                                fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
-                                with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                        # Self-Conditioning (Pass 1)
+                        self_cond = None
+                        if self.training_config.get("self_conditioning", True) and torch.rand(1).item() < 0.25:
+                            with torch.no_grad():
+                                if HAS_TE and self.training_config.get("use_fp8", False):
+                                    import transformer_engine.pytorch as te
+                                    from transformer_engine.common.recipe import Format, DelayedScaling
+                                    fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
+                                    with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                                        self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
+                                else:
                                     self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
-                            else:
-                                self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
-                    
-                    # Pass 2: Final Prediction
-                    if HAS_TE and self.training_config.get("use_fp8", False):
-                        import transformer_engine.pytorch as te
-                        from transformer_engine.common.recipe import Format, DelayedScaling
-                        fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
-                        with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                        
+                        # Pass 2: Final Prediction
+                        if HAS_TE and self.training_config.get("use_fp8", False):
+                            import transformer_engine.pytorch as te
+                            from transformer_engine.common.recipe import Format, DelayedScaling
+                            fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
+                            with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                                x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
+                        else:
                             x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
-                    else:
-                        x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
-                    
-                    # 2. Loss Calculation
-                    loss, denoising_loss, _ = self.loss_fn.calculate_total_loss(
-                        x0_pred=x0_pred,
-                        x0_target=clean_embeddings,
-                        input_ids=input_ids,
-                        embedding_weight=embedding_matrix,
-                        t_indices=timesteps,
-                        alphas_cumprod=self.noise_scheduler.alphas_cumprod,
-                        attention_mask=attention_mask
-                    )
-                    
-                    if not torch.isfinite(loss):
-                        self.accelerator.print(f"⚠️ [WARNING] NaN loss at step {self.global_step}. Skipping.")
+                        
+                        # 2. Loss Calculation
+                        loss, denoising_loss, _ = self.loss_fn.calculate_total_loss(
+                            x0_pred=x0_pred,
+                            x0_target=clean_embeddings,
+                            input_ids=input_ids,
+                            embedding_weight=embedding_matrix,
+                            t_indices=timesteps,
+                            alphas_cumprod=self.noise_scheduler.alphas_cumprod,
+                            attention_mask=attention_mask
+                        )
+                        
+                        if not torch.isfinite(loss):
+                            self.accelerator.print(f"⚠️ [WARNING] NaN loss at step {self.global_step}. Skipping.")
+                            optimizer.zero_grad(set_to_none=True)
+                            continue
+                        
+                        # 3. Backward & Step
+                        self.accelerator.backward(loss)
+                        if self.accelerator.sync_gradients:
+                            self.accelerator.clip_grad_norm_(self.model.parameters(), 0.8)
+                        
+                        optimizer.step()
+                        lr_scheduler.step()
                         optimizer.zero_grad(set_to_none=True)
-                        continue
-                    
-                    # 3. Backward & Step
-                    self.accelerator.backward(loss)
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
-                    
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
 
                 if self.accelerator.sync_gradients:
                     self.global_step += 1
+                    
                     if self.accelerator.is_main_process:
-                        progress_bar.update(1)
                         lr_val = lr_scheduler.get_last_lr()[0]
                         metrics = {
                             "loss": loss.item(),
                             "denoising_loss": denoising_loss.item(),
                             "lr": lr_val,
-                            "step": self.global_step
+                            "step": self.global_step,
                         }
                         self.accelerator.log(metrics, step=self.global_step)
-                        progress_bar.set_postfix({"loss": f"{metrics['loss']:.4f}", "lr": f"{lr_val:.2e}"})
+                        progress_bar.set_postfix({
+                            "loss": f"{metrics['loss']:.4f}", 
+                            "lr": f"{lr_val:.2e}"
+                        })
 
-                        # Periodically save checkpoints
-                        if self.global_step % self.training_config.get("save_steps", 500) == 0:
+                        # Periodically save checkpoints (Time-based or Step-based)
+                        save_steps = self.training_config.get("save_steps", 5000)
+                        save_interval_hrs = self.training_config.get("save_interval_hours", 2)
+                        time_since_save = (time.time() - self.last_save_time) / 3600
+                        
+                        if (self.global_step > 0) and ((self.global_step % save_steps == 0) or (time_since_save >= save_interval_hrs)):
                             self._save_checkpoint(self.global_step, optimizer, lr_scheduler, epoch)
+                            self.last_save_time = time.time()
 
                         # Periodically generate previews
                         if self.global_step % self.training_config.get("preview_steps", 100) == 0:
@@ -250,6 +320,42 @@ class DiffusionLMTrainer:
         
         # Sync to Object Storage (R2/S3) if enabled
         self.storage_manager.upload_checkpoint_async(ckpt_path)
+        
+        # Cleanup old checkpoints (Local and R2)
+        if self.accelerator.is_main_process:
+            self._prune_checkpoints()
+
+    def _prune_checkpoints(self):
+        """
+        Keeps local and remote checkpoints under the save_total_limit.
+        """
+        limit = self.training_config.get("save_total_limit", 5)
+        if limit <= 0:
+            return
+
+        # 1. Local Pruning
+        try:
+            checkpoint_dirs = [
+                os.path.join(self.output_dir, d) 
+                for d in os.listdir(self.output_dir) 
+                if d.startswith("checkpoint-") and os.path.isdir(os.path.join(self.output_dir, d))
+            ]
+            
+            if len(checkpoint_dirs) > limit:
+                # Sort by step number
+                checkpoint_dirs.sort(key=lambda x: int(x.split("-")[-1]))
+                to_delete = checkpoint_dirs[:-limit]
+                
+                for dir_path in to_delete:
+                    print(f"🧹 Pruning local checkpoint: {dir_path}")
+                    shutil.rmtree(dir_path)
+                    
+        except Exception as e:
+            print(f"⚠️ Error pruning local checkpoints: {e}")
+
+        # 2. Remote Pruning (R2)
+        if self.storage_manager.enabled:
+            self.storage_manager.cleanup_remotely(limit)
 
     def _load_training_state(self, path, optimizer, lr_scheduler):
         print(f"🔄 Resuming from {path}...")
@@ -270,13 +376,37 @@ class DiffusionLMTrainer:
         with torch.no_grad():
             unwrapped = self.accelerator.unwrap_model(self.model)
             embedding_matrix = unwrapped.get_input_embeddings().weight
-            logits = torch.matmul(x0_pred.float(), embedding_matrix.float().t())
+            
+            # --- Robust Decoding (Cosine Similarity) ---
+            # Normalizing helps argmax pick the contextually correct token even if confidence/norm is low
+            x0_norm = x0_pred.float() / (x0_pred.float().norm(dim=-1, keepdim=True) + 1e-8)
+            emb_norm = embedding_matrix.float() / (embedding_matrix.float().norm(dim=-1, keepdim=True) + 1e-8)
+            
+            logits = torch.matmul(x0_norm, emb_norm.t())
             tokens = torch.argmax(logits, dim=-1)
             text = self.tokenizer.decode(tokens, skip_special_tokens=True)
             target = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            
+            # --- Best Case Preview ---
+            # If the current training t is very high, also show what the model predicts for low noise (t=0)
+            best_case_text = ""
+            if t_idx > 50:
+                # One extra forward pass with t=0 to see current 'Clean Embedding' recovery progress
+                low_t = torch.zeros((1,), device=self.device).long()
+                # Prepare a mini-batch of 1
+                clean_embeds = unwrapped.get_input_embeddings()(input_ids.unsqueeze(0))
+                # Just show the model's direct map at t=0
+                x0_low = unwrapped.diffusion_forward(clean_embeds, low_t)
+                x0_low_norm = x0_low[0].float() / (x0_low[0].float().norm(dim=-1, keepdim=True) + 1e-8)
+                logits_low = torch.matmul(x0_low_norm, emb_norm.t())
+                tokens_low = torch.argmax(logits_low, dim=-1)
+                best_case_text = self.tokenizer.decode(tokens_low, skip_special_tokens=True)
+
             print(f"\n--- 🔍 PREVIEW (Step {self.global_step} | t={t_idx}) ---")
             print(f"Target:   {target[:120]}...")
             print(f"Predict:  {text[:120]}...")
+            if best_case_text:
+                print(f"Denoised: {best_case_text[:120]}... (Reconstructed from t=0)")
             print("-" * 50)
 
     def _apply_length_curriculum(self, input_ids, attention_mask):
@@ -288,7 +418,7 @@ class DiffusionLMTrainer:
         return input_ids, attention_mask
 
     def _collate_fn(self, features):
-        ids = [torch.tensor(f["input_ids"]) for f in features]
+        ids = [f["input_ids"].clone().detach() if torch.is_tensor(f["input_ids"]) else torch.tensor(f["input_ids"]) for f in features]
         padded = torch.nn.utils.rnn.pad_sequence(ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
         return {"input_ids": padded, "attention_mask": (padded != self.tokenizer.pad_token_id).long()}
 

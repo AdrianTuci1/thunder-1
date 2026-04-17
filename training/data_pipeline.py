@@ -34,40 +34,54 @@ class StreamingBlockDataset(IterableDataset):
         self.eos_token_id = eos_token_id
         self.extra_params = extra_params or {}
         
+        # [FIX] Lie to the DataLoader/HF to prevent automatic worker reduction
+        self.num_shards = 1000 
+        
         # We need access to formatting logic
         self.pipeline_helper = ThunderDataPipeline(tokenizer)
 
     def __iter__(self):
+        import torch
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 0
+        num_workers = worker_info.num_workers if worker_info is not None else 1
+
         token_buffer: List[int] = []
         blocks_yielded = 0
         
-        # The dataset is an interleaved or single StreamingDataset
-        for example in self.dataset:
-            # Determine which spec to use for formatting
-            # interleave_datasets adds a 'label' or we can try to guess
-            # but for now we use a generic extractor or check for fields
-            text = self.pipeline_helper._extract_text_generic(example)
-            
-            if not text:
-                continue
-                
-            token_ids = self.pipeline_helper._tokenize_text(text)
-            if not token_ids:
-                continue
+        # Patch get_worker_info so HuggingFace 'datasets' doesn't kill our workers
+        import unittest.mock
+        with unittest.mock.patch('torch.utils.data.get_worker_info', return_value=None):
+            dataset_iterator = iter(self.dataset)
 
-            token_buffer.extend(token_ids)
-            
-            # Add EOS between documents if configured
-            if self.extra_params.get("eos_between_documents", True) and self.eos_token_id is not None:
-                token_buffer.append(self.eos_token_id)
-
-            while len(token_buffer) >= self.block_size:
-                yield {"input_ids": torch.tensor(token_buffer[: self.block_size], dtype=torch.long)}
-                token_buffer = token_buffer[self.block_size :]
-                blocks_yielded += 1
+            for i, example in enumerate(dataset_iterator):
+                if i % num_workers != worker_id:
+                    continue
+                # Determine which spec to use for formatting
+                # interleave_datasets adds a 'label' or we can try to guess
+                # but for now we use a generic extractor or check for fields
+                text = self.pipeline_helper._extract_text_generic(example)
                 
-                if self.max_blocks is not None and blocks_yielded >= self.max_blocks:
-                    return
+                if not text:
+                    continue
+                    
+                token_ids = self.pipeline_helper._tokenize_text(text)
+                if not token_ids:
+                    continue
+
+                token_buffer.extend(token_ids)
+                
+                # Add EOS between documents if configured
+                if self.extra_params.get("eos_between_documents", True) and self.eos_token_id is not None:
+                    token_buffer.append(self.eos_token_id)
+
+                while len(token_buffer) >= self.block_size:
+                    yield {"input_ids": torch.tensor(token_buffer[: self.block_size], dtype=torch.long)}
+                    token_buffer = token_buffer[self.block_size :]
+                    blocks_yielded += 1
+                    
+                    if self.max_blocks is not None and blocks_yielded >= self.max_blocks:
+                        return
 
 
 class ThunderDataPipeline:
@@ -117,8 +131,17 @@ class ThunderDataPipeline:
                 # Interleave-aware sharding: each process takes a shard of the stream
                 ds = ds.shard(num_shards=world_size, index=rank)
             
-            # Apply individual shuffle buffer if streaming
-            ds = ds.shuffle(seed=self.shuffle_seed, buffer_size=1000)
+            # [FIX] Unify features strictly to avoid alignment errors between different metadata schemas.
+            # For IterableDatasets, column_names can be None, so we use a robust mapping.
+            text_field = spec.get("text_field", "text")
+            ds = ds.map(lambda x: {"text": x.get(text_field, "")})
+            
+            # Filter to keep ONLY the 'text' column for interleaving
+            try:
+                ds = ds.select_columns(["text"])
+            except Exception:
+                # Fallback if select_columns fails on streaming
+                pass
             
             loaded_datasets.append(ds)
             weights.append(spec.get("weight", 1.0))
@@ -167,7 +190,8 @@ class ThunderDataPipeline:
         tokenized = self.tokenizer(
             text,
             add_special_tokens=False,
-            truncation=False,
+            truncation=True,
+            max_length=100000,
             return_attention_mask=False,
         )
         return list(tokenized["input_ids"])

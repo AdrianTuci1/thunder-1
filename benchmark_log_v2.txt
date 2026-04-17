@@ -1,0 +1,24 @@
+Skipping import of cpp extensions due to incompatible torch version. Please upgr
+ade to torch >= 2.11.0 (found 2.10.0+cu128).
+¡ÿ Thunder: Loading tokenizer HuggingFaceTB/SmolLM2-135M for from-scratch dLLM..
+.
+¡ÿ Thunder: Scratch dLLM initialized (estimated params ~920.4M, actual params 84
+3.3M).
+¡ÿ Thunder: Initializing real-time stream from 6 sources...
+Resolving data files: 100%|ˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆ| 104/104 [00:00<00:00, 28448.94it/s]
+Resolving data files: 100%|ˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆ| 104/104 [00:00<00:00, 28268.27it/s]
+Resolving data files: 100%|ˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆ| 104/104 [00:00<00:00, 26805.61it/s]
+Resolving data files: 100%|ˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆˆ| 234/234 [00:00<00:00, 29669.50it/s]
+
+
+
+
+
+
+
+
+
+
+
+
+

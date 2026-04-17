@@ -1,0 +1,231 @@
+_wandb:
+    value:
+        cli_version: 0.26.0
+        e:
+            u6s6x0vjjn3zmcun1cgq12mneb173icw:
+                codePath: training/diffusion_lm_trainer.py
+                codePathLocal: training/diffusion_lm_trainer.py
+                cpu_count: 3
+                cpu_count_logical: 6
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "1409643618304"
+                        used: "31837175808"
+                email: adrian.tucicovenco@gmail.com
+                executable: /usr/bin/python3
+                gpu: GRID A100D-40C
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "42949672960"
+                      name: GRID A100D-40C
+                      uuid: GPU-96766e6a-3785-11f1-8e2b-f994d44eaf93
+                host: thunder
+                memory:
+                    total: "63190179840"
+                os: Linux-5.15.0-173-generic-x86_64-with-glibc2.35
+                program: /root/thunder/training/diffusion_lm_trainer.py
+                python: CPython 3.10.12
+                root: /root/thunder
+                startedAt: "2026-04-14T00:31:39.932991Z"
+                writerId: u6s6x0vjjn3zmcun1cgq12mneb173icw
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 51
+                - 53
+                - 71
+                - 98
+            "2":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 51
+                - 53
+                - 71
+                - 98
+            "3":
+                - 13
+            "4": 3.10.12
+            "5": 0.26.0
+            "6": 5.5.0
+            "12": 0.26.0
+            "13": linux-x86_64
+diffusion:
+    value:
+        cfg_drop_rate: 0.1
+        fast_steps: 5
+        schedule: sigmoid
+        steps: 256
+        teacher_steps: 32
+        thinking_steps: 16
+engine:
+    value:
+        device: auto
+        max_gen_len: 2048
+        max_seq_len: 8192
+        model_source: scratch
+        tokenizer_name: HuggingFaceTB/SmolLM2-135M
+hardware:
+    value:
+        batch_size: 32
+        bf16_support: true
+        flash_attention: true
+        fused_kernels: false
+        grad_accum: 16
+        gradient_checkpointing: true
+        load_in_4bit: false
+        stream_count: 32
+        target_inference_gpu: RTX 4090 24GB
+        target_train_gpu: A100 80GB
+logic:
+    value:
+        default_steps: 5
+        internal_threshold: 0.5
+        max_steps: 24
+        min_steps: 3
+        modes:
+            fast:
+                base: 3
+                max: 8
+            instant:
+                base: 2
+                max: 5
+            thinking:
+                base: 8
+                max: 24
+        scaling:
+            length_weight: 0.2
+model:
+    value:
+        dropout: 0
+        embedding_dim: 1536
+        ffn_hidden_size: 5120
+        latent_bridge:
+            compression_ratio: 1.2
+            enabled: true
+        latent_dim: 1280
+        max_seq_len: 8192
+        num_attention_heads: 20
+        num_kv_heads: 5
+        num_layers: 32
+        pad_token_id: 0
+        rope_theta: 500000
+        self_conditioning: true
+        use_rope: true
+        vocab_size: 49152
+pipeline:
+    value:
+        block_size: 8192
+        curriculum_lengths:
+            - 1024
+            - 2048
+            - 4096
+            - 8192
+        eos_between_documents: true
+        num_proc: 4
+        packing: true
+        pretrain_hf_datasets:
+            - format: prompt_response
+              path: identity_data/thunder_identity.jsonl
+              split: train
+              weight: 0.03
+            - format: text
+              name: cosmopedia-v2
+              path: HuggingFaceTB/cosmopedia-v2
+              split: train
+              streaming: true
+              text_field: text
+              weight: 0.17
+            - format: text
+              name: fineweb-edu-dedup
+              path: HuggingFaceTB/smollm-corpus
+              split: train
+              streaming: true
+              text_field: text
+              weight: 0.3
+            - format: text
+              path: faur-ai/fulg
+              split: train
+              streaming: true
+              text_field: text
+              weight: 0.3
+            - format: text
+              path: open-web-math/open-web-math
+              split: train
+              streaming: true
+              text_field: text
+              weight: 0.1
+            - format: text
+              path: codeparrot/codeparrot-clean
+              split: train
+              text_field: content
+              weight: 0.1
+        sft_hf_datasets:
+            - format: conversations
+              messages_field: conversations
+              path: Open-Orca/SlimOrca
+              split: train
+              streaming: true
+              weight: 0.35
+            - format: messages
+              messages_field: messages
+              path: HuggingFaceH4/ultrafeedback_binarized
+              split: train_sft
+              streaming: true
+              weight: 0.35
+            - format: conversations
+              messages_field: conversations
+              path: open-thoughts/OpenThoughts-114k
+              split: train
+              streaming: true
+              weight: 0.2
+            - format: text
+              path: codeparrot/codeparrot-clean
+              split: train
+              text_field: content
+              weight: 0.1
+        shuffle_seed: 3407
+server:
+    value:
+        api_token: thunder-secret-at-2026
+        host: 0.0.0.0
+        port: 8000
+storage:
+    value:
+        access_key_id: null
+        bucket: null
+        enabled: true
+        endpoint_url: null
+        provider: r2
+        region: auto
+        secret_access_key: null
+training:
+    value:
+        curriculum_stage_steps: 2500
+        epochs: 1
+        learning_rate: 0.00018
+        logging_steps: 1
+        max_documents_per_dataset: 1000000
+        max_steps: 78125
+        max_train_blocks: 2441407
+        output_dir: ./runs/thunder_v1_850M_production
+        pipeline_key: pretrain_hf_datasets
+        preview_steps: 100
+        resume_from: null
+        save_steps: 500
+        save_total_limit: 5
+        seed: 3407
+        t_round_penalty: 0
+        use_wandb: true
+        wandb_project: thunder-dllm
+        warmup_steps: 2000
+        weight_decay: 0.1

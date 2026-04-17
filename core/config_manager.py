@@ -11,7 +11,7 @@ THUNDER_CONFIG = {
     "engine": {
         "model_source": "scratch",
         "tokenizer_name": "HuggingFaceTB/SmolLM2-135M",
-        "max_seq_len": 8192,           # Increased for Big Run
+        "max_seq_len": 2048,           # Increased for Big Run
         "max_gen_len": 2048,
         "device": "auto",
     },
@@ -21,14 +21,14 @@ THUNDER_CONFIG = {
     # ------------------------------------------------------------------
     "model": {
         "vocab_size": 49152,           # Locked: SmolLM2-135M tokenizer. Do not change after pretraining starts.
-        "embedding_dim": 1536,           # Token space used for clamping and logits.
-        "latent_dim": 1280,              # Compressed denoising space for cheaper diffusion steps.
-        "ffn_hidden_size": 5120,
-        "num_layers": 32,
-        "num_attention_heads": 20,
-        "num_kv_heads": 5,             # GQA: 4:1 ratio
+        "embedding_dim": 1152,           # Token space used for clamping and logits.
+        "latent_dim": 1152,              # Compressed denoising space for cheaper diffusion steps.
+        "ffn_hidden_size": 4608,
+        "num_layers": 24,
+        "num_attention_heads": 16,
+        "num_kv_heads": 4,             # GQA: 4:1 ratio
         "dropout": 0.0,
-        "max_seq_len": 8192,
+        "max_seq_len": 2048,
         "pad_token_id": 0,
         "self_conditioning": True,
         "use_rope": True,              # Enable Rotary Positional Embeddings
@@ -44,8 +44,8 @@ THUNDER_CONFIG = {
     # ------------------------------------------------------------------
     "hardware": {
         "load_in_4bit": False,
-        "batch_size": 2,
-        "grad_accum": 16,
+        "batch_size": 8,               # Reduced from 16 to avoid OOM, still 2x original
+        "grad_accum": 16,               # Increased to keep EBS = 128
         "bf16_support": True,
         "gradient_checkpointing": True,
         "flash_attention": True,
@@ -71,22 +71,27 @@ THUNDER_CONFIG = {
     # 5. TRAINING
     # ------------------------------------------------------------------
     "training": {
-        "learning_rate": 1.8e-4,       # Adjusted for 0.85B stability
+        "learning_rate": 1.2e-4,       # Reduced for better stability after spikes
         "weight_decay": 0.1,
-        "warmup_steps": 2000,
-        "curriculum_stage_steps": 2500,
+        "warmup_steps": 3000,
+        "curriculum_stage_steps": 1250,
         "epochs": 1,
-        "max_steps": 50000,           # Optimized for 50h on 2x A100
+        "max_steps": 150000, 
         "output_dir": "./runs/thunder_v1_850M_production",
-        "save_steps": 500,
+        "save_steps": 5000,
+        "save_interval_hours": 2,      # Added per user request
         "logging_steps": 1,
-        "preview_steps": 100,
+        "preview_steps": 1000,
         "save_total_limit": 5,
         "t_round_penalty": 0.0,
-        "resume_from": None,           # Starting fresh with GQA architecture
+        "resume_from": "./runs/thunder_v1_850M_production/checkpoint-8273",
+        "noise_sampling_mode": "biased",
+        "noise_sampling_range": [0, 40],
+        "lr_schedule_type": "thunder_warmdown",
+        "warmdown_constant_steps": 10000,
         "seed": 3407,
         "pipeline_key": "pretrain_hf_datasets",
-        "max_train_blocks": 2500000,   
+        "max_train_blocks": 4882813,   
         "max_documents_per_dataset": 1000000,
         "use_wandb": True,             # Generate automatic WandB links
         "wandb_project": "thunder-dllm",
@@ -98,26 +103,25 @@ THUNDER_CONFIG = {
     "pipeline": {
         "num_proc": 4,
         "packing": True,
-        "block_size": 8192,
-        "curriculum_lengths": [1024, 2048, 4096, 8192],
+        "block_size": 2048,
+        "curriculum_lengths": [512, 1024, 2048],
         "eos_between_documents": True,
         "shuffle_seed": 3407,
         "pretrain_hf_datasets": [
             {
                 "path": "identity_data/thunder_identity.jsonl",
                 "split": "train",
-                "format": "text",
-                "text_field": "text",
-                "weight": 1.0,
+                "format": "prompt_response",
+                "weight": 0.03,
             },
             {
                 "path": "HuggingFaceTB/cosmopedia-v2",
-                "name": "default",
+                "name": "cosmopedia-v2",
                 "split": "train",
                 "format": "text",
                 "text_field": "text",
                 "streaming": True,
-                "weight": 0.20,        # High-density reasoning/knowledge
+                "weight": 0.27,
             },
             {
                 "path": "HuggingFaceTB/smollm-corpus",
@@ -126,15 +130,7 @@ THUNDER_CONFIG = {
                 "format": "text",
                 "text_field": "text",
                 "streaming": True,
-                "weight": 0.30,        # High-quality English web
-            },
-            {
-                "path": "readerbench/FuLG",
-                "split": "train",
-                "format": "text",
-                "text_field": "text",
-                "streaming": True,
-                "weight": 0.30,        # Romanian language core
+                "weight": 0.45,
             },
             {
                 "path": "open-web-math/open-web-math",
@@ -142,14 +138,14 @@ THUNDER_CONFIG = {
                 "format": "text",
                 "text_field": "text",
                 "streaming": True,
-                "weight": 0.10,        # Mathematical reasoning
+                "weight": 0.15,
             },
             {
                 "path": "codeparrot/codeparrot-clean",
                 "split": "train",
                 "format": "text",
                 "text_field": "content",
-                "weight": 0.10,        # Coding logic
+                "weight": 0.10,
             },
         ],
         "sft_hf_datasets": [

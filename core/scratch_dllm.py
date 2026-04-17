@@ -213,7 +213,9 @@ class TimestepEmbedder(nn.Module):
     def forward(self, timesteps: torch.Tensor, max_t: int) -> torch.Tensor:
         if timesteps.dim() == 1:
             timesteps = timesteps.unsqueeze(-1)
-        return self.net(timesteps.float() / max(max_t, 1))
+        # Normalize in float, then cast to match network weights (e.g., BF16)
+        x = timesteps.float() / max(max_t, 1)
+        return self.net(x.to(self.net[0].weight.dtype))
 
 
 class BidirectionalRotaryEmbedding(nn.Module):
@@ -323,10 +325,10 @@ class ThunderScratchDiffusionLM(nn.Module):
         else:
             cos, sin = self.rope(seq_len, x_t.device)
             # Reshape for broadcasting in attention: [1, L, 1, D]
-            rope_cos = cos.view(1, seq_len, 1, -1)
-            rope_sin = sin.view(1, seq_len, 1, -1)
+            rope_cos = cos.view(1, seq_len, 1, -1).to(hidden.dtype)
+            rope_sin = sin.view(1, seq_len, 1, -1).to(hidden.dtype)
             
-        hidden = hidden + self.timestep_embedder(t, self.diffusion_steps).unsqueeze(1)
+        hidden = hidden + self.timestep_embedder(t, self.diffusion_steps).unsqueeze(1).to(hidden.dtype)
 
         if self_cond is not None and self.config.self_conditioning:
             hidden = hidden + self.self_cond_proj(self_cond)

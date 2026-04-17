@@ -64,7 +64,8 @@ class ThunderNoiseScheduler:
         Adds noise with dynamic broadcasting for hidden states.
         """
         device = original_samples.device
-        self.alphas_cumprod = self.alphas_cumprod.to(device)
+        dtype = original_samples.dtype
+        self.alphas_cumprod = self.alphas_cumprod.to(device=device, dtype=dtype)
         
         t = torch.as_tensor(timesteps, device=device).long()
         

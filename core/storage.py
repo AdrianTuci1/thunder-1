@@ -33,6 +33,14 @@ class ObjectStorageManager:
             self.enabled = False
             return
 
+        # Fix: Strip bucket name from endpoint if it was accidentally included (common R2 mistake)
+        if self.endpoint_url and self.bucket_name:
+            # Remove bucket from end of URL if present
+            clean_endpoint = self.endpoint_url.rstrip("/")
+            if clean_endpoint.endswith(self.bucket_name):
+                self.endpoint_url = clean_endpoint[:-(len(self.bucket_name))].rstrip("/")
+                logger.info(f"🔧 Normalized R2 endpoint: {self.endpoint_url}")
+
         # Initialize S3 client for R2
         self.s3_client = boto3.client(
             "s3",
@@ -76,6 +84,64 @@ class ObjectStorageManager:
         except Exception as e:
             print(f"❌ Error syncing {base_name} to R2: {str(e)}")
             logger.error(f"Failed to upload checkpoint {local_dir} to R2: {e}")
+
+    def cleanup_remotely(self, keep_limit: int):
+        """
+        Lists all checkpoints in R2 and deletes the oldest ones to respect keep_limit.
+        """
+        if not self.enabled:
+            return
+
+        try:
+            # List all objects to find all checkpoint directories (handles nested or mis-prefixed keys)
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            checkpoints = set()
+            
+            for page in paginator.paginate(Bucket=self.bucket_name):
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        if "checkpoint-" in key:
+                            # Extract the checkpoint folder path (e.g. "checkpoint-1000" or "runs/checkpoint-1000")
+                            parts = key.split('/')
+                            for i, part in enumerate(parts):
+                                if part.startswith("checkpoint-"):
+                                    checkpoint_prefix = "/".join(parts[:i+1])
+                                    checkpoints.add(checkpoint_prefix)
+                                    break
+
+            if len(checkpoints) <= keep_limit:
+                return
+
+            # Sort checkpoints by step number numerically
+            sorted_checkpoints = sorted(
+                list(checkpoints), 
+                key=lambda x: int(x.split('-')[-1]) if '-' in x and x.split('-')[-1].isdigit() else 0
+            )
+
+            to_delete = sorted_checkpoints[:-keep_limit]
+            print(f"🧹 R2 Pruning: Found {len(checkpoints)} checkpoints, keeping last {keep_limit}. Deleting {len(to_delete)}...")
+            for folder in to_delete:
+                print(f"  - Deleting {folder}")
+                self._delete_folder(folder)
+            
+        except Exception as e:
+            logger.error(f"Error during R2 cleanup: {e}")
+
+    def _delete_folder(self, prefix: str):
+        """
+        Deletes all objects under a given prefix in R2.
+        """
+        try:
+            # Paginator to handle more than 1000 objects if needed
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                if 'Contents' in page:
+                    delete_keys = [{'Key': obj['Key']} for obj in page['Contents']]
+                    self.s3_client.delete_objects(Bucket=self.bucket_name, Delete={'Objects': delete_keys})
+            print(f"🗑️ Successfully deleted {prefix} from R2.")
+        except Exception as e:
+            logger.error(f"Failed to delete folder {prefix} from R2: {e}")
 
     def close(self):
         """
