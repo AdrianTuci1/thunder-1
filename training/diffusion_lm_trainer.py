@@ -108,10 +108,13 @@ class DiffusionLMTrainer:
             persistent_workers=is_iterable and self.pipeline_config.get("num_proc", 4) > 0
         )
         
+        # [NEW] Optimized Optimizer
+        use_fused = self.hardware_config.get("fused_kernels", False)
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.training_config.get("learning_rate", 2e-4),
             weight_decay=self.training_config.get("weight_decay", 0.1),
+            fused=use_fused and torch.cuda.is_available()
         )
         
         # Estimate training steps
@@ -159,17 +162,36 @@ class DiffusionLMTrainer:
             self.model, optimizer, dataloader, lr_scheduler
         )
 
+        # [NEW] Torch.compile for A100 Speedup
+        if self.hardware_config.get("fused_kernels", False):
+            try:
+                print("⚡ Thunder: Compiling model with torch.compile()... (First steps will be slow)")
+                self.model = torch.compile(self.model)
+            except Exception as e:
+                print(f"⚠️  Torch.compile failed: {e}. Falling back to eager mode.")
+
         # Resume logic
         resume_from = self.training_config.get("resume_from")
+        if resume_from == "latest":
+            resume_from = self._detect_latest_checkpoint()
+            
         if resume_from:
             self._load_training_state(resume_from, optimizer, lr_scheduler)
+            
+            # [NEW] Recalculate LR Scheduler state if using thunder_warmdown
+            if lr_type == "thunder_warmdown":
+                # We need to recalculate the decay_steps which might have been based on global_step=0.
+                # Since decay_steps is a local variable captured by lr_lambda, updating it here 
+                # will reflect in future calls to the scheduler.
+                decay_steps = num_training_steps - (self.global_step + constant_steps)
         
         self.model.train()
         optimizer.zero_grad(set_to_none=True)
 
-        for epoch in range(self.start_epoch, epochs):
-            if self.accelerator.is_main_process:
-                print(f"\n🚀 Epoch {epoch+1}/{epochs}")
+        try:
+            for epoch in range(self.start_epoch, epochs):
+                if self.accelerator.is_main_process:
+                    print(f"\n🚀 Epoch {epoch+1}/{epochs}")
             
             progress_bar = tqdm(
                 total=steps_per_epoch, 
@@ -179,17 +201,18 @@ class DiffusionLMTrainer:
             )
             
             for step, batch in enumerate(dataloader):
-                # [NEW] Logical Resume: Skip batches already processed in previous run
-                if is_iterable and step < self.global_step:
-                    if step % 100 == 0 and self.accelerator.is_main_process:
-                        progress_bar.set_description(f"⏩ Resuming... Skipping to step {self.global_step}")
+                # [NEW] Logical Resume: Skip batches already processed in previous sessions
+                # We use (global_step * grad_accum) to find the correct batch offset
+                grad_accum = self.hardware_config.get("grad_accum", 1)
+                skip_threshold = self.global_step * grad_accum
+                
+                if is_iterable and step < skip_threshold:
+                    if step % 1000 == 0 and self.accelerator.is_main_process:
+                        progress_bar.set_description(f"⏩ Skipping to batch {skip_threshold} (Global Step {self.global_step})")
                     continue
                 
-                if is_iterable and step == self.global_step and self.accelerator.is_main_process:
+                if is_iterable and step == skip_threshold and self.accelerator.is_main_process:
                     progress_bar.set_description("Training")
-                    
-                if self.accelerator.is_main_process and step > self.global_step:
-                    progress_bar.update(1)
 
                 if is_iterable and self.global_step >= num_training_steps:
                     break
@@ -277,6 +300,9 @@ class DiffusionLMTrainer:
                     self.global_step += 1
                     
                     if self.accelerator.is_main_process:
+                        progress_bar.update(1)
+                    
+                    if self.accelerator.is_main_process:
                         lr_val = lr_scheduler.get_last_lr()[0]
                         metrics = {
                             "loss": loss.item(),
@@ -303,7 +329,21 @@ class DiffusionLMTrainer:
                         if self.global_step % self.training_config.get("preview_steps", 100) == 0:
                             self._generate_preview(input_ids[0], x0_pred[0], timesteps[0].item())
 
-            progress_bar.close()
+                progress_bar.close()
+                
+        except KeyboardInterrupt:
+            if self.accelerator.is_main_process:
+                print("\n🛑 Training interrupted by user (Ctrl+C).")
+        except Exception as e:
+            if self.accelerator.is_main_process:
+                print(f"\n❌ Training crashed with error: {e}")
+            raise e
+        finally:
+            if self.accelerator.is_main_process:
+                print("💾 [Save-on-Exit] Saving final state before shutdown...")
+                # We save whatever global_step we reached
+                self._save_checkpoint(self.global_step, optimizer, lr_scheduler, self.start_epoch)
+                print("🏁 Training session closed.")
 
     def _save_checkpoint(self, step, optimizer, lr_scheduler, epoch):
         ckpt_path = os.path.join(self.output_dir, f"checkpoint-{step}")
@@ -358,7 +398,26 @@ class DiffusionLMTrainer:
             self.storage_manager.cleanup_remotely(limit)
 
     def _load_training_state(self, path, optimizer, lr_scheduler):
+        """
+        Loads model, optimizer, and scheduler states.
+        If the path doesn't exist locally, attempts to download it from R2.
+        """
         print(f"🔄 Resuming from {path}...")
+        
+        # Check if local path exists; if not, try R2 download
+        if not os.path.exists(path) or not os.path.exists(os.path.join(path, "model_state.pt")):
+            if self.storage_manager.enabled:
+                print(f"🕵️  Checkpoint not found locally. Searching in R2...")
+                # The 'path' might be 'runs/checkpoint-1000' or just 'checkpoint-1000'
+                checkpoint_name = os.path.basename(path.rstrip("/"))
+                success = self.storage_manager.download_checkpoint(checkpoint_name, path)
+                if not success:
+                    print(f"❌ Failed to find or download checkpoint {checkpoint_name} from R2.")
+                    return
+            else:
+                print(f"❌ Checkpoint {path} not found and R2 storage is disabled.")
+                return
+
         unwrapped = self.accelerator.unwrap_model(self.model)
         unwrapped.load_state_dict(torch.load(os.path.join(path, "model_state.pt"), map_location=self.device, weights_only=True))
         
@@ -371,6 +430,46 @@ class DiffusionLMTrainer:
                 meta = json.load(f)
                 self.global_step = meta.get("step", 0)
                 self.start_epoch = meta.get("epoch", 0)
+        
+        print(f"✅ Successfully resumed from step {self.global_step}")
+
+    def _detect_latest_checkpoint(self) -> Optional[str]:
+        """
+        Detects the latest checkpoint locally or in R2.
+        Returns the path to the checkpoint.
+        """
+        local_latest = None
+        if os.path.exists(self.output_dir):
+            checkpoint_dirs = [
+                d for d in os.listdir(self.output_dir) 
+                if d.startswith("checkpoint-") and os.path.isdir(os.path.join(self.output_dir, d))
+            ]
+            if checkpoint_dirs:
+                checkpoint_dirs.sort(key=lambda x: int(x.split("-")[-1]))
+                local_latest = os.path.join(self.output_dir, checkpoint_dirs[-1])
+        
+        # Also check R2
+        remote_latest_name = self.storage_manager.get_latest_checkpoint_name()
+        
+        if not local_latest and not remote_latest_name:
+            print("⚠️ No checkpoints found locally or in R2.")
+            return None
+            
+        if not local_latest:
+            return os.path.join(self.output_dir, os.path.basename(remote_latest_name))
+            
+        if not remote_latest_name:
+            return local_latest
+            
+        # Compare step numbers if both exist
+        local_step = int(os.path.basename(local_latest).split("-")[-1])
+        remote_step = int(remote_latest_name.split("-")[-1])
+        
+        if remote_step > local_step:
+            print(f"🌐 R2 has a newer checkpoint ({remote_step} > {local_step}).")
+            return os.path.join(self.output_dir, os.path.basename(remote_latest_name))
+        
+        return local_latest
 
     def _generate_preview(self, input_ids, x0_pred, t_idx):
         with torch.no_grad():

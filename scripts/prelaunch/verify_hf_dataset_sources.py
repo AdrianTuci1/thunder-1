@@ -1,6 +1,13 @@
-#!/usr/bin/env python3
 import argparse
 import json
+import os
+import sys
+from pathlib import Path
+
+# Adaugam root-ul proiectului in path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+ROOT = Path(__file__).resolve().parents[2]
 
 from core.config_manager import THUNDER_CONFIG
 

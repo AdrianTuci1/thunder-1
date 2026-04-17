@@ -4,7 +4,7 @@ import modal
 from typing import List, Optional
 
 # Project path setup
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Modal Image Setup
 image = (
@@ -16,6 +16,8 @@ image = (
         "accelerate>=0.28.0",
         "tokenizers>=0.19.0",
         "tqdm",
+        "boto3",
+        "botocore",
     )
     .add_local_dir(
         PROJECT_ROOT,
@@ -24,15 +26,16 @@ image = (
     )
 )
 
-volume = modal.Volume.from_name("thunder-checkpoints")
+volume = modal.Volume.from_name("thunder-checkpoints", create_if_missing=True)
 app = modal.App("thunder-inference")
 
 @app.function(
     image=image,
     gpu="L40S",
     volumes={"/checkpoints": volume},
+    secrets=[modal.Secret.from_dotenv()],
 )
-def run_interactive_test(checkpoint_name: str, prompts: List[str]):
+def run_interactive_test(checkpoint_name: str, prompts: List[str], temperature: float = 0.8, steps: int = 50):
     import os
     import sys
     
@@ -41,11 +44,50 @@ def run_interactive_test(checkpoint_name: str, prompts: List[str]):
     sys.path.insert(0, "/thunder")
     
     import torch
+    import torch.nn.functional as F
     from core.config_manager import THUNDER_CONFIG
     from core.scratch_dllm import ThunderScratchDiffusionLM, ScratchDLMConfig
     from training.noise_scheduler import ThunderNoiseScheduler
     from transformers import AutoTokenizer
-
+    from core.storage import ObjectStorageManager
+    
+    # --- Check for Checkpoint existence and download if missing ---
+    checkpoint_base = "/checkpoints"
+    checkpoint_path = os.path.join(checkpoint_base, checkpoint_name)
+    model_state_path = os.path.join(checkpoint_path, "model_state.pt")
+    
+    if not os.path.exists(model_state_path):
+        print(f"⚠️ Checkpoint '{checkpoint_name}' not found locally in volume. Attempting R2 download...")
+        storage = ObjectStorageManager(THUNDER_CONFIG)
+        success = storage.download_checkpoint(checkpoint_name, checkpoint_path)
+        if not success:
+            raise RuntimeError(f"Could not download checkpoint {checkpoint_name} from R2.")
+        # Commit changes to the volume manually if needed, 
+        # but Modal Volume usually syncs on write-back if configured (or we just use it during this run)
+        volume.commit()
+    
+    # --- Incarcare Model ---
+    print(f"⚡ Loading Thunder from {checkpoint_path}...")
+    
+    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+    
+    dlm_config = ScratchDLMConfig(
+        vocab_size=len(tokenizer),
+        max_seq_len=THUNDER_CONFIG["model"]["max_seq_len"],
+        embedding_dim=THUNDER_CONFIG["model"]["embedding_dim"],
+        latent_dim=THUNDER_CONFIG["model"]["latent_dim"],
+        num_layers=THUNDER_CONFIG["model"]["num_layers"],
+        num_attention_heads=THUNDER_CONFIG["model"]["num_attention_heads"],
+        num_kv_heads=THUNDER_CONFIG["model"]["num_kv_heads"],
+        ffn_hidden_size=THUNDER_CONFIG["model"]["ffn_hidden_size"],
+    )
+    
+    model = ThunderScratchDiffusionLM(dlm_config)
+    model_state = os.path.join(checkpoint_path, "model_state.pt")
+    model.load_state_dict(torch.load(model_state, map_location="cuda", weights_only=True))
+    model.to("cuda")
+    model.eval()
+    
     # --- Definire Sampler ---
     class DiffusionSampler:
         def __init__(self, model, tokenizer, scheduler):
@@ -108,8 +150,16 @@ def run_interactive_test(checkpoint_name: str, prompts: List[str]):
                 if prefix_len > 0:
                     x_t[:, :prefix_len, :] = prefix_embeds
 
-            logits = torch.matmul(x0_pred, embedding_matrix.t())
-            logits = logits / (latent_dim ** 0.5)
+            # --- High-Quality Decoding: Cosine Similarity & Scaling ---
+            # Normalizam vectorii pentru a elimina discrepanta de magnitudine (std 0.01 vs 1.0)
+            x0_normed = F.normalize(x0_pred, dim=-1)
+            emb_normed = F.normalize(embedding_matrix, dim=-1)
+            
+            # Calculam logit-ii bazati pe proximitate unghiulara
+            logits = torch.matmul(x0_normed, emb_normed.t())
+            
+            # Scalam logit-ii (20.0 - 50.0 este standard pentru a "ascuti" distributia)
+            logits = logits * 30.0 
             
             if temperature > 0:
                 probs = torch.softmax(logits / temperature, dim=-1)
@@ -122,21 +172,6 @@ def run_interactive_test(checkpoint_name: str, prompts: List[str]):
 
             return self.tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-    # --- Incarcare Model ---
-    checkpoint_path = f"/checkpoints/pilot_run_v1/{checkpoint_name}"
-    print(f"⚡ Loading Thunder from {checkpoint_path}...")
-    
-    tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M")
-    
-    dlm_config = ScratchDLMConfig(
-        vocab_size=len(tokenizer),
-        max_seq_len=THUNDER_CONFIG["model"]["max_seq_len"],
-        embedding_dim=THUNDER_CONFIG["model"]["embedding_dim"],
-        latent_dim=THUNDER_CONFIG["model"]["latent_dim"],
-        num_layers=THUNDER_CONFIG["model"]["num_layers"],
-        num_attention_heads=THUNDER_CONFIG["model"]["num_attention_heads"],
-        ffn_hidden_size=THUNDER_CONFIG["model"]["ffn_hidden_size"],
-    )
     
     model = ThunderScratchDiffusionLM(dlm_config)
     model_state = os.path.join(checkpoint_path, "model_state.pt")
@@ -157,19 +192,30 @@ def run_interactive_test(checkpoint_name: str, prompts: List[str]):
             completion = sampler.sample(
                 prefix_text=prompt, 
                 max_length=64, 
-                num_inference_steps=50,
-                temperature=0.8
+                num_inference_steps=steps,
+                temperature=temperature
             )
             print(f"  Result {i+1}: {completion}")
 
 @app.local_entrypoint()
-def main(checkpoint: str = "checkpoint-1250"):
+def main(checkpoint: str = "checkpoint-9765", temp: float = 0.8, steps: int = 50):
     prompts = [
-        "The capital of Romania is",
-        "Thunder 1 is a new",
-        "In a world where",
-        "Scientific research shows",
-        "Cândva, în inima",
-        "Staticlabs is known for"
+        # --- Knowledge & Science ---
+        "Newton's first law of motion states that",
+        "The fundamental theorem of calculus is used to",
+        "The structure of a DNA molecule is known as",
+        
+        # --- Python Coding ---
+        "import torch\nimport torch.nn as nn\n# Define a simple MLP classifier with 3 hidden layers:",
+        "def quicksort(arr):\n    \"\"\"Implementation of the quicksort algorithm in Python.\"\"\"",
+        
+        # --- SQL / DB ---
+        "SELECT e.name, d.department_name FROM employees e JOIN departments d ON",
+        "CREATE TABLE users (id SERIAL PRIMARY KEY, username TEXT UNIQUE, email TEXT,",
+        
+        # --- General / Creative ---
+        "In a future where AI and humans collaborate seamlessly,",
+        "The primary advantage of a diffusion language model compared to an autoregressive model is",
+        "StaticLabs is a research lab focusing on"
     ]
-    run_interactive_test.remote(checkpoint, prompts)
+    run_interactive_test.remote(checkpoint, prompts, temperature=temp, steps=steps)

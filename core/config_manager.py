@@ -44,14 +44,14 @@ THUNDER_CONFIG = {
     # ------------------------------------------------------------------
     "hardware": {
         "load_in_4bit": False,
-        "batch_size": 8,               # Reduced from 16 to avoid OOM, still 2x original
-        "grad_accum": 16,               # Increased to keep EBS = 128
+        "batch_size": 16,               # Reduced from 16 to avoid OOM, still 2x original
+        "grad_accum": 8,               # Increased to keep EBS = 128
         "bf16_support": True,
-        "gradient_checkpointing": True,
+        "gradient_checkpointing": False,
         "flash_attention": True,
-        "fused_kernels": False,
+        "fused_kernels": True,
         "stream_count": 32,
-        "target_train_gpu": "A100 80GB",
+        "target_train_gpu": "A100 40GB",
         "target_inference_gpu": "RTX 4090 24GB",
     },
 
@@ -71,26 +71,26 @@ THUNDER_CONFIG = {
     # 5. TRAINING
     # ------------------------------------------------------------------
     "training": {
-        "learning_rate": 1.2e-4,       # Reduced for better stability after spikes
+        "learning_rate": 5e-5,          # Lowered for SFT fine-tuning
         "weight_decay": 0.1,
-        "warmup_steps": 3000,
+        "warmup_steps": 500,           # Shorter warmup for SFT
         "curriculum_stage_steps": 1250,
         "epochs": 1,
         "max_steps": 150000, 
         "output_dir": "./runs/thunder_v1_850M_production",
         "save_steps": 5000,
-        "save_interval_hours": 2,      # Added per user request
+        "save_interval_hours": 6,      # Mai rara, la cererea utilizatorului
         "logging_steps": 1,
         "preview_steps": 1000,
         "save_total_limit": 5,
         "t_round_penalty": 0.0,
-        "resume_from": "./runs/thunder_v1_850M_production/checkpoint-8273",
+        "resume_from": "latest",
         "noise_sampling_mode": "biased",
         "noise_sampling_range": [0, 40],
         "lr_schedule_type": "thunder_warmdown",
         "warmdown_constant_steps": 10000,
         "seed": 3407,
-        "pipeline_key": "pretrain_hf_datasets",
+        "pipeline_key": "sft_hf_datasets",
         "max_train_blocks": 4882813,   
         "max_documents_per_dataset": 1000000,
         "use_wandb": True,             # Generate automatic WandB links
@@ -150,12 +150,17 @@ THUNDER_CONFIG = {
         ],
         "sft_hf_datasets": [
             {
+                "path": "data/synthetic_sft_english_20k.jsonl",
+                "format": "instruction_output",
+                "weight": 0.15,
+            },
+            {
                 "path": "Open-Orca/SlimOrca",
                 "split": "train",
                 "format": "conversations",
                 "messages_field": "conversations",
                 "streaming": True,
-                "weight": 0.35,
+                "weight": 0.30,
             },
             {
                 "path": "HuggingFaceH4/ultrafeedback_binarized",
@@ -163,7 +168,7 @@ THUNDER_CONFIG = {
                 "format": "messages",
                 "messages_field": "messages",
                 "streaming": True,
-                "weight": 0.35,
+                "weight": 0.30,
             },
             {
                 "path": "open-thoughts/OpenThoughts-114k",
@@ -171,7 +176,7 @@ THUNDER_CONFIG = {
                 "format": "conversations",
                 "messages_field": "conversations",
                 "streaming": True,
-                "weight": 0.20,
+                "weight": 0.15,
             },
             {
                 "path": "codeparrot/codeparrot-clean",

@@ -14,8 +14,7 @@ venv
 __pycache__
 *.pyc
 runs
-data
-identity_data/*.jsonl
+wandb
 *.log
 *.tar.gz
 .gemini

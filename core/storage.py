@@ -85,6 +85,64 @@ class ObjectStorageManager:
             print(f"❌ Error syncing {base_name} to R2: {str(e)}")
             logger.error(f"Failed to upload checkpoint {local_dir} to R2: {e}")
 
+    def download_checkpoint(self, checkpoint_name: str, local_dest: str):
+        """
+        Synchronously downloads a checkpoint folder from R2.
+        """
+        if not self.enabled:
+            logger.error("Attempted to download from R2 while storage is disabled.")
+            return False
+
+        try:
+            os.makedirs(local_dest, exist_ok=True)
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            
+            # Ensure prefix ends with / if it's a folder
+            prefix = checkpoint_name.rstrip('/') + '/'
+            print(f"📥 Downloading checkpoint '{checkpoint_name}' from R2 to {local_dest}...")
+            
+            download_count = 0
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        s3_key = obj['Key']
+                        # Calculate local path
+                        relative_path = os.path.relpath(s3_key, prefix)
+                        if relative_path == ".": continue # Skip the folder key itself if it exists
+                        
+                        local_file_path = os.path.join(local_dest, relative_path)
+                        
+                        # Ensure directory exists
+                        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                        
+                        print(f"  - {relative_path}")
+                        self.s3_client.download_file(self.bucket_name, s3_key, local_file_path)
+                        download_count += 1
+            
+            if download_count == 0:
+                # Try without trailing slash just in case it's a prefix rather than a folder
+                prefix_no_slash = checkpoint_name.rstrip('/')
+                for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix_no_slash):
+                    if 'Contents' in page:
+                         for obj in page['Contents']:
+                            s3_key = obj['Key']
+                            relative_path = os.path.relpath(s3_key, os.path.dirname(prefix_no_slash))
+                            local_file_path = os.path.join(os.path.dirname(local_dest), relative_path)
+                            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+                            print(f"  - {relative_path}")
+                            self.s3_client.download_file(self.bucket_name, s3_key, local_file_path)
+                            download_count += 1
+
+            if download_count == 0:
+                print(f"⚠️ No files found for checkpoint '{checkpoint_name}' in R2.")
+                return False
+                
+            print(f"✅ Download complete. {download_count} files retrieved.")
+            return True
+        except Exception as e:
+            print(f"❌ Error downloading from R2: {str(e)}")
+            return False
+
     def cleanup_remotely(self, keep_limit: int):
         """
         Lists all checkpoints in R2 and deletes the oldest ones to respect keep_limit.
@@ -127,6 +185,43 @@ class ObjectStorageManager:
             
         except Exception as e:
             logger.error(f"Error during R2 cleanup: {e}")
+
+    def get_latest_checkpoint_name(self) -> Optional[str]:
+        """
+        Queries R2 to find the checkpoint folder with the highest step number.
+        Returns the full path/prefix of the checkpoint.
+        """
+        if not self.enabled:
+            return None
+
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            checkpoints = set()
+            
+            for page in paginator.paginate(Bucket=self.bucket_name):
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        key = obj['Key']
+                        if "checkpoint-" in key:
+                            parts = key.split('/')
+                            for i, part in enumerate(parts):
+                                if part.startswith("checkpoint-"):
+                                    checkpoint_prefix = "/".join(parts[:i+1])
+                                    checkpoints.add(checkpoint_prefix)
+                                    break
+            
+            if not checkpoints:
+                return None
+
+            # Return the one with the highest step number
+            latest = max(
+                list(checkpoints), 
+                key=lambda x: int(x.split('-')[-1]) if '-' in x and x.split('-')[-1].isdigit() else 0
+            )
+            return latest
+        except Exception as e:
+            logger.error(f"Error finding latest checkpoint in R2: {e}")
+            return None
 
     def _delete_folder(self, prefix: str):
         """

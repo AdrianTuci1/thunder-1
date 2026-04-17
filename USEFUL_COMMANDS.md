@@ -65,7 +65,39 @@ Sesiunile `screen` îți permit să rulezi codul în fundal, chiar dacă te deco
 
 - **Împachetare cod**:
   ```bash
-  bash scripts/package_thunder.sh
+  bash scripts/utils/package_thunder.sh
   ```
 
-python3 scripts/preview_checkpoint.py
+## 🔍 Audit și Inferență Locală
+
+- **Verificare Pregătire Antrenament**:
+  ```bash
+  python3 scripts/prelaunch/audit_training_readiness.py
+  ```
+- **Inferență Locală (Fără Modal)**:
+  ```bash
+  python3 scripts/inference/local_inference.py --checkpoint checkpoint-9765 --r2-sync
+  ```
+- **Previzualizare Checkpoint**:
+  ```bash
+  python3 scripts/inference/preview_checkpoint.py
+  ```
+
+## ☁️ Modal Cloud (Serverless GPU)
+
+Folosește Modal pentru a scala rapid pe GPU-uri performante (L40S / A100) fără configurare locală.
+
+- **Inferență în Cloud**:
+  ```bash
+  modal run scripts/inference/modal_inference.py --checkpoint checkpoint-9765
+  ```
+- **Lansare Antrenament pe Modal**:
+  ```bash
+  modal run scripts/pretraining/modal_train.py
+  ```
+- **Inspectare Volum Date (Checkpoints)**:
+  ```bash
+  modal volume ls thunder-checkpoints
+  ```
+- **Monitorizare Task-uri**:
+  Accesează consola: [https://modal.com/apps](https://modal.com/apps)

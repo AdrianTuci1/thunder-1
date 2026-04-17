@@ -2,7 +2,7 @@ import os
 import sys
 import torch
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from core.model_loader import ThunderModelLoader
 from core.diffusion_model import PrefixLMDiffusionAdapter
