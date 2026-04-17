@@ -66,7 +66,8 @@ SMOKE_OVERRIDES = {
     "latent_dim": 256,
     "ffn_hidden_size": 512,
     "num_attention_heads": 8,
-    "max_seq_len": 128,      # bloc mic, nu 2048
+    "num_kv_heads": 2,       # Missing GQA parameter
+    "max_seq_len": 128,      # bloc mic, nu 8192
 }
 
 SMOKE_DIFFUSION_STEPS = 16
@@ -90,8 +91,9 @@ SMOKE_DATASET_SPEC = {      # doar primul dataset din mix, pentru viteza
 
 @app.function(
     image=image,
-    gpu="T4",
-    timeout=300,
+    gpu="A100",
+    secrets=[modal.Secret.from_dotenv(".env")],
+    timeout=600,
 )
 def run_smoke_test():
     import sys
@@ -200,9 +202,11 @@ def run_smoke_test():
             max_documents_per_dataset=SMOKE_N_DOCUMENTS,
         )
         ok("ThunderDataPipeline.prepare_dataset() fara erori")
-        ok(f"Dataset produce blocuri (>= 1)", len(dataset) >= 1)
-        print(f"     Blocuri packed: {len(dataset)} x {SMOKE_OVERRIDES['max_seq_len']} tokens")
-        print(f"     Primul block (primii 10 ids): {dataset[0]['input_ids'][:10]}")
+        ok(f"Dataset instantiat corect", dataset is not None)
+        # StreamingBlockDataset nu are len(), luam un exemplu dintr-un iterator scurt
+        sample_batch = next(iter(dataset))
+        ok("Dataset produce date valide", "input_ids" in sample_batch)
+        print(f"     Primul block (primii 10 ids): {sample_batch['input_ids'][:10]}")
 
     except Exception as exc:
         ok("ThunderDataPipeline.prepare_dataset() fara erori", False)
@@ -224,9 +228,11 @@ def run_smoke_test():
             ffn_hidden_size=cfg_dict["ffn_hidden_size"],
             num_layers=cfg_dict["num_layers"],
             num_attention_heads=cfg_dict["num_attention_heads"],
+            num_kv_heads=cfg_dict["num_kv_heads"], # Added GQA support
             max_seq_len=cfg_dict["max_seq_len"],
             pad_token_id=THUNDER_CONFIG["model"].get("pad_token_id", 0),
             self_conditioning=THUNDER_CONFIG["model"].get("self_conditioning", True),
+            use_fp8=True, # Test FP8 path
         )
 
         model = ThunderScratchDiffusionLM(
@@ -256,11 +262,13 @@ def run_smoke_test():
     section("5. Forward pass (date reale / bidirectional)")
     loss = None
     try:
-        if dataset is not None and len(dataset) > 0:
-            block_ids = dataset[0]["input_ids"]
+        if dataset is not None:
+            # Luam primul batch din iteratorul de streaming
+            batch = next(iter(dataset))
+            block_ids = batch["input_ids"]
             if isinstance(block_ids, list):
                 block_ids = torch.tensor(block_ids)
-            src = "date reale din HF"
+            src = "date reale din flux"
         else:
             block_ids = torch.randint(0, len(tokenizer), (SMOKE_OVERRIDES["max_seq_len"],))
             src = "date random (fallback)"

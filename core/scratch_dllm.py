@@ -5,6 +5,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    import transformer_engine.pytorch as te
+    from transformer_engine.common.recipe import Format, DelayedScaling
+    HAS_TE = True
+except ImportError:
+    HAS_TE = False
+
+
+try:
+    from flash_attn import flash_attn_func
+    HAS_FLASH_ATTN = True
+    print("⚡ Thunder: Standardizing on high-perf FlashAttention backend.")
+except ImportError:
+    HAS_FLASH_ATTN = False
+
+try:
+    from flash_attn import flash_attn_func
+    HAS_FLASH_ATTN = True
+    print("⚡ Thunder: Standardizing on explicit flash_attn backend (FA3 ready).")
+except ImportError:
+    HAS_FLASH_ATTN = False
 
 def build_bidirectional_attention_mask(attention_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     """
@@ -34,6 +55,7 @@ class ScratchDLMConfig:
     self_conditioning: bool = True
     use_rope: bool = True
     rope_theta: float = 100000.0
+    use_fp8: bool = False             # Enable FP8 via Transformer Engine
 
     @property
     def hidden_size(self) -> int:
@@ -56,9 +78,14 @@ class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        if HAS_TE:
+            self.norm = te.RMSNorm(dim, eps=eps)
+        else:
+            self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if HAS_TE:
+            return self.norm(x)
         rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return x * rms * self.weight
 
@@ -66,9 +93,10 @@ class RMSNorm(nn.Module):
 class SwiGLU(nn.Module):
     def __init__(self, dim: int, hidden_dim: int):
         super().__init__()
-        self.gate = nn.Linear(dim, hidden_dim, bias=False)
-        self.up = nn.Linear(dim, hidden_dim, bias=False)
-        self.down = nn.Linear(hidden_dim, dim, bias=False)
+        linear_cls = te.Linear if HAS_TE else nn.Linear
+        self.gate = linear_cls(dim, hidden_dim, bias=False)
+        self.up = linear_cls(dim, hidden_dim, bias=False)
+        self.down = linear_cls(hidden_dim, dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.down(F.silu(self.gate(x)) * self.up(x))
@@ -86,10 +114,11 @@ class BidirectionalSelfAttention(nn.Module):
         self.head_dim = dim // num_heads
         self.dropout = dropout
 
-        self.q_proj = nn.Linear(dim, dim, bias=False)
-        self.k_proj = nn.Linear(dim, num_kv_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(dim, num_kv_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(dim, dim, bias=False)
+        linear_cls = te.Linear if HAS_TE else nn.Linear
+        self.q_proj = linear_cls(dim, dim, bias=False)
+        self.k_proj = linear_cls(dim, num_kv_heads * self.head_dim, bias=False)
+        self.v_proj = linear_cls(dim, num_kv_heads * self.head_dim, bias=False)
+        self.o_proj = linear_cls(dim, dim, bias=False)
 
     def _apply_rope(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         # x shape: [B, L, H, D]
@@ -118,26 +147,37 @@ class BidirectionalSelfAttention(nn.Module):
             q = self._apply_rope(q, rope_cos, rope_sin)
             k = self._apply_rope(k, rope_cos, rope_sin)
 
+        q_fa = q  # Save [B, S, H, D] format for explicit flash_attn
+        k_fa = k
+        v_fa = v
+
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Repeat K/V heads if using GQA
+        # Repeat K/V heads if using GQA for SDPA fallback
         if self.num_groups > 1:
             k = k.repeat_interleave(self.num_groups, dim=1)
             v = v.repeat_interleave(self.num_groups, dim=1)
 
-        attn_mask = build_bidirectional_attention_mask(attention_mask)
         dropout_p = self.dropout if self.training else 0.0
-        attn_output = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=False,
-        )
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.dim)
+
+        if HAS_FLASH_ATTN and q.device.type == "cuda" and q.dtype in [torch.float16, torch.bfloat16]:
+            # FlashAttention uses the [B, S, H, D] structures directly and supports GQA natively.
+            attn_output = flash_attn_func(q_fa, k_fa, v_fa, dropout_p=dropout_p, causal=False)
+            attn_output = attn_output.contiguous().view(batch_size, seq_len, self.dim)
+        else:
+            attn_mask = build_bidirectional_attention_mask(attention_mask)
+            attn_output = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=dropout_p,
+                is_causal=False,
+            )
+            attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.dim)
+            
         return self.o_proj(attn_output)
 
 
@@ -214,8 +254,9 @@ class ThunderScratchDiffusionLM(nn.Module):
             self.rope = None
             self.position_embeddings = nn.Embedding(config.max_seq_len, config.latent_dim)
             
-        self.latent_in = nn.Linear(config.embedding_dim, config.latent_dim, bias=False)
-        self.self_cond_proj = nn.Linear(config.embedding_dim, config.latent_dim, bias=False)
+        linear_cls = te.Linear if HAS_TE else nn.Linear
+        self.latent_in = linear_cls(config.embedding_dim, config.latent_dim, bias=False)
+        self.self_cond_proj = linear_cls(config.embedding_dim, config.latent_dim, bias=False)
         self.timestep_embedder = TimestepEmbedder(config.latent_dim)
 
         self.blocks = nn.ModuleList(
@@ -231,7 +272,8 @@ class ThunderScratchDiffusionLM(nn.Module):
             ]
         )
         self.final_norm = RMSNorm(config.latent_dim)
-        self.x0_head = nn.Linear(config.latent_dim, config.embedding_dim, bias=False)
+        linear_cls = te.Linear if HAS_TE else nn.Linear
+        self.x0_head = linear_cls(config.latent_dim, config.embedding_dim, bias=False)
 
         self._reset_parameters()
 

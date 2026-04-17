@@ -19,6 +19,7 @@ identity_data/*.jsonl
 *.log
 *.tar.gz
 .gemini
+.env
 EOF
 
 # Package the repository

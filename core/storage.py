@@ -20,9 +20,9 @@ class ObjectStorageManager:
         if not self.enabled:
             return
 
-        self.bucket_name = self.storage_config.get("bucket")
-        self.endpoint_url = self.storage_config.get("endpoint_url")
-        self.region = self.storage_config.get("region", "auto")
+        self.bucket_name = self.storage_config.get("bucket") or os.getenv("THUNDER_R2_BUCKET")
+        self.endpoint_url = self.storage_config.get("endpoint_url") or os.getenv("THUNDER_R2_ENDPOINT")
+        self.region = self.storage_config.get("region", "auto") or os.getenv("THUNDER_R2_REGION", "auto")
         
         # Priority: Config keys -> Environment Variables
         self.access_key = self.storage_config.get("access_key_id") or os.getenv("THUNDER_R2_ACCESS_KEY")

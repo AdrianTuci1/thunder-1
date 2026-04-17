@@ -21,6 +21,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config_manager import THUNDER_CONFIG
 from training.noise_scheduler import ThunderNoiseScheduler
 from training.loss_functions import DiffusionLMLoss
+
+try:
+    import transformer_engine.pytorch as te
+    HAS_TE = True
+except ImportError:
+    HAS_TE = False
 from core.model_loader import ThunderModelLoader
 from training.data_pipeline import ThunderDataPipeline
 from core.storage import ObjectStorageManager
@@ -161,10 +167,24 @@ class DiffusionLMTrainer:
                     self_cond = None
                     if self.training_config.get("self_conditioning", True) and torch.rand(1).item() < 0.5:
                         with torch.no_grad():
-                            self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
+                            if HAS_TE and self.training_config.get("use_fp8", False):
+                                import transformer_engine.pytorch as te
+                                from transformer_engine.common.recipe import Format, DelayedScaling
+                                fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
+                                with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                                    self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
+                            else:
+                                self_cond = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask).detach()
                     
                     # Pass 2: Final Prediction
-                    x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
+                    if HAS_TE and self.training_config.get("use_fp8", False):
+                        import transformer_engine.pytorch as te
+                        from transformer_engine.common.recipe import Format, DelayedScaling
+                        fp8_recipe = DelayedScaling(fp8_format=Format.E4M3, amax_history_len=16, amax_compute_algo="max")
+                        with te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+                            x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
+                    else:
+                        x0_pred = self.model.diffusion_forward(noisy_latents, timesteps, cfg_mask, self_cond=self_cond)
                     
                     # 2. Loss Calculation
                     loss, denoising_loss, _ = self.loss_fn.calculate_total_loss(

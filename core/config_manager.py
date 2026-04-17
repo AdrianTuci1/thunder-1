@@ -12,7 +12,7 @@ THUNDER_CONFIG = {
         "model_source": "scratch",
         "tokenizer_name": "HuggingFaceTB/SmolLM2-135M",
         "max_seq_len": 8192,           # Increased for Big Run
-        "max_gen_len": 1024,
+        "max_gen_len": 2048,
         "device": "auto",
     },
 
@@ -86,8 +86,10 @@ THUNDER_CONFIG = {
         "resume_from": None,           # Starting fresh with GQA architecture
         "seed": 3407,
         "pipeline_key": "pretrain_hf_datasets",
-        "max_train_blocks": 8000000,   # ~16B tokens target
+        "max_train_blocks": 2500000,   
         "max_documents_per_dataset": 1000000,
+        "use_wandb": True,             # Generate automatic WandB links
+        "wandb_project": "thunder-dllm",
     },
 
     # ------------------------------------------------------------------
@@ -215,12 +217,12 @@ THUNDER_CONFIG = {
     # 9. STORAGE (R2 / S3)
     # ------------------------------------------------------------------
     "storage": {
-        "enabled": False,              # Toggle for object storage syncing
+        "enabled": True,               # Toggle for object storage syncing
         "provider": "r2",
-        "bucket": "thunder-checkpoints",
-        "endpoint_url": "https://<account_id>.r2.cloudflarestorage.com",
-        "region": "auto",
-        "access_key_id": None,         # Suggestion: Use THUNDER_R2_ACCESS_KEY env var
-        "secret_access_key": None,     # Suggestion: Use THUNDER_R2_SECRET_KEY env var
+        "bucket": None,                # Loaded from THUNDER_R2_BUCKET
+        "endpoint_url": None,          # Loaded from THUNDER_R2_ENDPOINT
+        "region": "auto",              # Loaded from THUNDER_R2_REGION
+        "access_key_id": None,         # Loaded from THUNDER_R2_ACCESS_KEY
+        "secret_access_key": None,     # Loaded from THUNDER_R2_SECRET_KEY
     },
 }

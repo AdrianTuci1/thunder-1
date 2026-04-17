@@ -12,3 +12,5 @@ thunder_prefixlm_llama/
 .ipynb_checkpoints/
 .DS_Store
 unsloth_compiled_cache/
+.env
+env
